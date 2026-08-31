@@ -3,6 +3,26 @@
 All notable changes to AddressMend are recorded here. The project uses
 semantic versioning.
 
+## 1.3.1 — 31 August 2026
+
+- Replaced unrestricted fuzzy address rewriting with a two-stage
+  detector/corrector policy: number-only and flat-only input can be completed
+  automatically from an exact bare premise or close same-parity neighbours,
+  while weaker partial, fuzzy and third-party candidates remain review-only.
+- Reject address candidates with a conflicting premise number anywhere in the
+  candidate, including flat and building prefixes.
+- Preserve explicit postcode boundaries, remove deletion-based variants and
+  avoid fuzzy replacement of already valid postcodes.
+- Preserve valid uncommon email domains, stop inferring unbracketed surnames
+  from concatenated email local-parts, and use only delimiter-separated identity
+  evidence to resolve bracketed name alternatives.
+- Preserve the supplied field when postcode, email or bracket evidence remains
+  unresolved, while retaining the candidate and explanation in the audit.
+- Consolidate sequential applied edits into a single accurate audit event.
+- Added built-in regressions for exact-premise and neighbour-supported address
+  completion, premise conflicts, postcode truncation, uncommon domains,
+  shared-email surnames and review-only fuzzy changes.
+
 ## 1.3.0 — 31 August 2026
 
 - Added native macOS clipboard integration through the built-in `pbcopy` and

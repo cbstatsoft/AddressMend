@@ -8,7 +8,7 @@
 
 AddressMend is a deterministic, rule-based desktop programme for cleaning
 six-column UK contact tables. It repairs common OCR damage, normalises postcodes
-and email addresses, harmonises partial addresses with postcode evidence and
+and email addresses, evaluates partial addresses against postcode evidence and
 produces an audit trail explaining every decision.
 
 The ordinary desktop workflow requires only Python 3.10 or newer. It is built
@@ -23,7 +23,8 @@ rights, while also supporting macOS, GNU/Linux, Excel, Numbers and LibreOffice.
 - Repair postcode spacing, Markdown email wrappers and conservative OCR errors.
 - Resolve bracketed OCR alternatives such as `[x/y]` when field evidence
   selects one choice.
-- Complete partial addresses from offline data or optional online lookups.
+- Automatically complete strongly corroborated number-only and flat-only
+  addresses; retain weaker partial or fuzzy candidates for review.
 - Reuse corrections that a person has previously approved.
 - Mark uncertain suggestions for review instead of silently presenting guesses
   as facts.
@@ -63,11 +64,12 @@ Confidence labels in the review report have specific meanings:
 
 | Label | Meaning |
 | --- | --- |
-| `high`, numeric score, or `learned` | Evidence met the automatic correction threshold. |
+| `high` or numeric score | Deterministic field evidence met a calibrated automatic correction rule. |
+| `learned` | An exact correction previously approved by a person was reused. |
 | `verified` | The supplied value was supported and did not need changing. |
 | `formatting` | Only wrappers, spacing or escaping changed. |
-| `review` | A provisional harmonisation was useful but still needs confirmation. |
-| `unresolved` | The programme deliberately declined to guess. |
+| `review` | A candidate is recorded for confirmation; the cleaned TSV retains the supplied value. |
+| `unresolved` | The programme deliberately declined to guess and retained the supplied value. |
 
 Always inspect `review` and `unresolved` items before relying on the output.
 
@@ -76,17 +78,27 @@ Always inspect `review` and `unresolved` items before relying on the output.
 The cleaner does not contain person-specific or address-specific `if` rules.
 It applies reusable evidence rules:
 
-1. Expand bracketed alternatives, normalise the supplied postcode and try
-   credible OCR variants.
-2. Check approved correction memory.
-3. Match the premise or fragment within that postcode using the offline index.
+1. Preserve an explicitly supplied postcode boundary while expanding bracketed
+   alternatives and trying only length-preserving OCR substitutions.
+2. Reuse an exact correction that a person previously approved.
+3. Validate the exact postcode and match the supplied premise or fragment within
+   it using the offline index.
 4. Optionally consult Doogal's postcode-constrained known-address list.
-5. Accept a full match only when the score and uniqueness threshold are met.
-6. Infer a street provisionally only when all usable postcode candidates agree
-   on that street.
-7. Collapse flat listings to a shared base address only when they agree on one
-   building.
-8. Leave the value unresolved when evidence conflicts.
+5. Reject every candidate containing a conflicting premise number, including
+   numbers in flat or building prefixes.
+6. Treat a number-only or flat-only address as detected incomplete input. Apply
+   a completion only when the postcode-constrained data contains one exact bare
+   premise, or when close same-parity neighbours bracket the missing premise on
+   the sole street.
+7. Record fuzzy changes to already-complete text, uncorroborated street guesses
+   and broad third-party matches as `review` suggestions without changing the
+   cleaned TSV.
+8. Retain the supplied value when evidence conflicts or remains incomplete.
+
+This detector-then-corrector split prevents a plausible lookup from rewriting a
+field that was not demonstrably incomplete. Numeric confidence labels for the
+automatic incomplete-address rules are calibrated against the maintained
+regression batch; `--address-threshold` can raise the required level.
 
 Approved batch-specific corrections live in the local SQLite memory, not in
 the public source code.
@@ -118,12 +130,15 @@ Option **9** switches to local-only processing.
 | Service | Data sent | Purpose |
 | --- | --- | --- |
 | Doogal | Postcode only | Postcode-constrained roads and known addresses. |
-| postcodes.io | Postcode or plausible postcode variants | Validation and canonical formatting. |
+| postcodes.io | Exact postcode after conservative local normalisation | Validation and canonical formatting. |
 | Google Public DNS | Domain after `@` only | Check an uncommon email domain; never verifies a mailbox. |
 | OpenStreetMap/Nominatim | Address only when its postcode is missing or invalid | Provisional missing-postcode recovery. |
 | getAddress.io | Partial address and postcode, only when separately configured | Licensed premise lookup. |
 
 Names and complete email addresses are not sent to Doogal, postcodes.io or DNS.
+Valid uncommon email domains are never changed merely because they resemble a
+common provider; DNS results can flag a domain for review but cannot prove or
+rewrite a mailbox.
 Nominatim calls are sequential, limited to at most one per second, cached and
 identified with an application user agent in accordance with its
 [public usage policy](https://operations.osmfoundation.org/policies/nominatim/).
