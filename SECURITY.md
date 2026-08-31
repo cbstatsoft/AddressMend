@@ -21,6 +21,9 @@ issue.
 - Do not commit test cases copied from real contact records.
 - Store API keys in environment variables, not source files or command history.
 - Treat third-party address results as evidence, not guaranteed truth.
+- Confirm substantive address, postcode, name and email suggestions before
+  approving them into correction memory; review-only candidates do not alter
+  the cleaned output.
 - Review all `review` and `unresolved` audit entries before operational use.
 - Check the relevant provider's current terms, attribution and rate limits.
 
