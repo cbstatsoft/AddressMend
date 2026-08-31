@@ -3399,7 +3399,8 @@ def friendly_clean(
         if clipboard_route:
             print(f"Copied through {clipboard_route}.")
             print(
-                "Open Excel, Numbers or LibreOffice Calc and select the first cell. "
+                "Open Microsoft Excel, Apple Numbers or LibreOffice Calc and "
+                "select the first cell. "
                 "Press Command+V on macOS or Ctrl+V elsewhere."
             )
         else:

@@ -13,7 +13,8 @@ produces an audit trail explaining every decision.
 
 The ordinary desktop workflow requires only Python 3.10 or newer. It is built
 primarily for restricted Windows work environments without administrator
-rights, while also supporting macOS, GNU/Linux, Excel, Numbers and LibreOffice.
+rights, while also supporting macOS, GNU/Linux, Microsoft Excel, Apple Numbers
+and LibreOffice Calc.
 
 ## Features
 
@@ -29,7 +30,8 @@ rights, while also supporting macOS, GNU/Linux, Excel, Numbers and LibreOffice.
 - Mark uncertain suggestions for review instead of silently presenting guesses
   as facts.
 - Use the native Windows, macOS, Wayland or X11 clipboard when available.
-- Export plain tab-separated text for Excel, Numbers and LibreOffice Calc.
+- Export plain tab-separated text for Microsoft Excel, Apple Numbers and
+  LibreOffice Calc.
 
 The six columns are:
 
@@ -44,6 +46,60 @@ sources for postcodes, postcode-constrained candidates for addresses, and email
 syntax for email addresses. It changes the value only when one choice is uniquely
 supported; otherwise the original bracketed value is retained and marked
 `unresolved` in the review report.
+
+## OCR correction procedure
+
+AddressMend separates **error detection** from **correction**. A different
+lookup result is not, by itself, proof that the transcription is wrong. The
+programme first decides whether a field is malformed, ambiguous or demonstrably
+incomplete; only then does it generate and assess replacements.
+
+1. **Preserve and normalise.** Trim repeated whitespace, remove recognised
+   Markdown email wrappers and normalise harmless case or postcode spacing.
+   Keep the supplied text available for both the audit and conservative
+   fallback.
+2. **Detect a possible OCR problem.** Detection is field-specific: square
+   brackets indicate explicit alternatives; invalid syntax can flag a postcode
+   or email; and a bare house/flat number is an incomplete address. A complete,
+   syntactically valid name or address is not declared wrong merely because a
+   fuzzy lookup resembles it.
+3. **Generate restricted candidates.** Expand at most 128 bracket combinations.
+   Postcodes use UK structure and length-preserving OCR character confusions,
+   not arbitrary character deletion. Automatic address candidates must be
+   constrained by the supplied postcode; a broad Nominatim search is
+   review-only. Name evidence comes only from delimiter-separated words in the
+   email local part. Valid uncommon email domains remain valid candidates rather
+   than being changed to a popular provider by edit distance.
+4. **Reject contradictions.** Discard address candidates with a conflicting
+   house, flat or unit number anywhere in the address. Reject ambiguous bracket
+   choices, non-unique postcode variants and candidates that fail the relevant
+   field syntax.
+5. **Apply only a supported winner.** Previously approved exact corrections take
+   priority. A new incomplete-address completion is automatic only when there
+   is one exact bare premise in the postcode data, or close same-parity
+   neighbours bracket the missing number on the sole street. The numeric rule
+   confidence must also meet `--address-threshold`.
+6. **Abstain and explain.** Fuzzy changes to complete text, broad online matches
+   and conflicting or incomplete evidence are written as `review` or
+   `unresolved`. They do not replace the field in the cleaned TSV.
+7. **Learn only after approval.** The `learn` command compares a raw batch with
+   a row-aligned approved batch and stores exact row, person and address
+   corrections in the local SQLite memory. Future exact matches are labelled
+   `learned`; review suggestions never teach themselves.
+
+The evidence used for each field is deliberately different:
+
+| Field | Candidate evidence | Automatic gate |
+| --- | --- | --- |
+| Title/name | Explicit bracket alternatives; approved person matched by exact email | Unique delimiter-separated email evidence, or approved memory |
+| Address | Offline index, Doogal, optional getAddress.io or Nominatim | Approved memory; harmless equivalent formatting; or a strongly corroborated incomplete premise |
+| Postcode | UK syntax, bracket alternatives, offline postcode index and exact postcodes.io validation | Unique valid bracket/index result or exact canonical formatting; no fuzzy change to an already valid postcode |
+| Email | Wrapper removal, email syntax and explicit bracket alternatives | Harmless formatting or one unique syntactically valid bracket choice; uncommon domains are not similarity-rewritten |
+
+This design follows the established detector-then-corrector pattern for reducing
+false OCR changes and uses field-specific confusion sets rather than unrestricted
+edit distance. See [Schaefer and Neudecker's two-step approach](https://aclanthology.org/2020.latechclfl-1.6.pdf)
+and [Hassan, Noeman and Hassan's discussion of symbol confusion matrices](https://aclanthology.org/I08-2131.pdf).
 
 ## What the programme creates
 
