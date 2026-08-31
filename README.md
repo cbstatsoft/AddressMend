@@ -118,45 +118,41 @@ The menu is recommended for ordinary use. The command line is available for
 repeatable or advanced work.
 
 ```sh
+chmod a+x addressmend.py
+
 # Environment and feature check
-python addressmend.py doctor
+./addressmend.py doctor
 
 # Clean a saved table locally
-python addressmend.py clean input.tsv -o output.tsv --audit review.tsv
+./addressmend.py clean input.tsv -o output.tsv --audit review.tsv
 
 # Use the standard free online helpers explicitly
-python addressmend.py clean input.tsv -o output.tsv --audit review.tsv \
+./addressmend.py clean input.tsv -o output.tsv --audit review.tsv \
   --online-validate --doogal --nominatim --validate-email-domains \
   --memory corrections.sqlite
 
 # Build an offline address index from a headed TSV
-python addressmend.py build-index addresses.tsv --db uk_addresses.sqlite \
+./addressmend.py build-index addresses.tsv --db uk_addresses.sqlite \
   --postcode-column postcode --address-columns address
 
 # Teach row-aligned, manually approved corrections
-python addressmend.py learn original.tsv approved.tsv \
+./addressmend.py learn original.tsv approved.tsv \
   --memory corrections.sqlite
 
 # Download a direct official data URL with safe resume support
-python addressmend.py download https://example.invalid/data.zip \
+./addressmend.py download https://example.invalid/data.zip \
   --destination "Downloaded address data"
 ```
 
-Run `python addressmend.py --help` and the individual command's `--help`
+Run `./addressmend.py --help` and the individual command's `--help`
 for every option.
 
 ## Repository layout
 
 ```text
 addressmend.py                     standalone application
-Start_AddressMend.cmd              Windows desktop launcher
-Start_AddressMend.sh               Linux launcher
-tests/                             standard-library automated tests
-generated_test_input.tsv           synthetic integration-test input
-generated_address_reference.tsv    synthetic offline test reference
-scripts/build_release.py           reproducible release packager
-.github/workflows/tests.yml        Windows/Linux test matrix
-.github/workflows/release.yml      tagged GitHub release automation
+start.cmd              Windows desktop launcher
+start.sh               Linux launcher
 ```
 
 The single-file application is intentional: a user in a locked-down work
