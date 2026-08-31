@@ -19,7 +19,8 @@ rights, while also supporting GNU/Linux and LibreOffice.
 - Read six-column Markdown, TSV and CSV files without installing packages.
 - Preserve the original row order and six output columns.
 - Repair postcode spacing, Markdown email wrappers and conservative OCR errors.
-- Resolve bracketed OCR alternatives such as `[x/y]` when field evidence selects one choice.
+- Resolve bracketed OCR alternatives such as `[x/y]` when field evidence
+  selects one choice.
 - Complete partial addresses from offline data or optional online lookups.
 - Reuse corrections that a person has previously approved.
 - Mark uncertain suggestions for review instead of silently presenting guesses
@@ -72,7 +73,8 @@ Always inspect `review` and `unresolved` items before relying on the output.
 The cleaner does not contain person-specific or address-specific `if` rules.
 It applies reusable evidence rules:
 
-1. Expand bracketed alternatives, normalise the supplied postcode and try credible OCR variants.
+1. Expand bracketed alternatives, normalise the supplied postcode and try
+   credible OCR variants.
 2. Check approved correction memory.
 3. Match the premise or fragment within that postcode using the offline index.
 4. Optionally consult Doogal's postcode-constrained known-address list.
