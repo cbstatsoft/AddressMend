@@ -18,6 +18,7 @@ The programme uses deterministic rules and can:
 * optionally use getAddress.io for premise-level address lookup;
 * validate/canonicalise postcodes with the free postcodes.io API;
 * optionally recover a missing postcode through a rate-limited Nominatim search;
+* resolve ``[x/y]`` OCR choices only when field evidence selects one option;
 * make only high-confidence name/email OCR corrections;
 * learn exact corrections from a raw batch plus an approved batch;
 * preserve row order and output six-column, spreadsheet-ready TSV;
@@ -92,7 +93,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 COPYRIGHT = "Copyright (C) 2026 Connor Baird"
 FIELD_NAMES = ("title", "first_name", "last_name", "address", "postcode", "email")
 UK_POSTCODE_RE = re.compile(
@@ -110,7 +111,7 @@ HOUSE_RE = re.compile(
     r"^\s*((?:(?:flat|apartment|room|unit)\s+)?\d+[A-Z]?(?:[-/]\d+[A-Z]?)?)\b",
     re.I,
 )
-BRACKET_CHOICE_RE = re.compile(r"\[([^]/\]]+)/([^\]]+)]")
+BRACKET_CHOICE_RE = re.compile(r"\[([^\[\]/]+(?:/[^\[\]/]+)+)\]")
 COMMON_DOMAINS = (
     "gmail.com",
     "googlemail.com",
@@ -319,8 +320,8 @@ def unwrap_email(value: str) -> str:
     return value.strip()
 
 
-def clean_email(value: str) -> tuple[str, str | None]:
-    value = unwrap_email(value)
+def _clean_email_candidate(value: str) -> tuple[str, str | None]:
+    """Normalise one email candidate that contains no OCR choice brackets."""
     if not value:
         return "", None
     if value.count("@") != 1:
@@ -336,10 +337,28 @@ def clean_email(value: str) -> tuple[str, str | None]:
     return value, None if EMAIL_RE.fullmatch(value) else "malformed email"
 
 
+def clean_email(value: str) -> tuple[str, str | None]:
+    """Clean an email, resolving bracket choices only when one result is valid."""
+    prepared = unwrap_email(value)
+    variants = bracket_variants(prepared)
+    if len(variants) > 1:
+        valid = []
+        for variant in variants:
+            candidate, problem = _clean_email_candidate(unwrap_email(variant))
+            if not problem:
+                valid.append(candidate)
+        valid = list(dict.fromkeys(valid))
+        if len(valid) == 1:
+            return valid[0], None
+        if len(valid) > 1:
+            return prepared, "ambiguous OCR bracket choice in email"
+        return prepared, "malformed email"
+    return _clean_email_candidate(prepared)
+
 def email_change_reason(original: str, cleaned: str) -> str:
     """Explain a deterministic email repair without claiming mailbox certainty."""
     raw = html.unescape(squash(original))
-    if "mailto" in raw.casefold() or raw.startswith("["):
+    if "mailto" in raw.casefold() or MARKDOWN_MAILTO_RE.fullmatch(raw):
         return "removed Markdown/mailto formatting and normalised email OCR"
     if raw.count("@") > 1 and cleaned.count("@") == 1:
         return "repaired an OCR duplicate-@ structure"
@@ -1022,9 +1041,14 @@ def choose_address(
     fragment: str, candidates: Sequence[tuple[str, str]], threshold: float = 0.84
 ) -> tuple[str, str, float, bool] | None:
     unique = list(dict.fromkeys(candidates))
+    fragments = bracket_variants(fragment)
     ranked = sorted(
         (
-            (score_address(fragment, address), address, postcode)
+            (
+                max(score_address(variant, address) for variant in fragments),
+                address,
+                postcode,
+            )
             for address, postcode in unique
         ),
         reverse=True,
@@ -1033,9 +1057,13 @@ def choose_address(
         return None
     best = ranked[0]
     second = ranked[1][0] if len(ranked) > 1 else 0.0
-    exact_house = (
-        house_key(fragment)
-        and sum(house_key(fragment) == house_key(address) for address, _ in unique) == 1
+    fragment_houses = {
+        house_key(variant) for variant in fragments if house_key(variant)
+    }
+    exact_house = bool(
+        fragment_houses
+        and house_key(best[1]) in fragment_houses
+        and sum(house_key(address) in fragment_houses for address, _ in unique) == 1
     )
     strong_score = best[0] >= threshold
     # A unique matching house/flat number within the supplied postcode is
@@ -1046,7 +1074,6 @@ def choose_address(
         exact_house or best[0] - second >= 0.07
     )
     return best[1], normalise_postcode(best[2]), best[0], accepted
-
 
 def http_json(url: str, timeout: float = 10.0) -> dict:
     request = urllib.request.Request(
@@ -1276,23 +1303,36 @@ def postcode_variants(value: str, limit: int = 40) -> list[str]:
 
 
 def offline_postcode_correction(raw: str, index: AddressIndex) -> tuple[str, bool]:
-    normal = normalise_postcode(raw)
+    choices = postcode_choice_candidates(raw)
+    known_choices = [choice for choice in choices if index.knows_postcode(choice)]
+    if len(known_choices) == 1:
+        return known_choices[0], known_choices[0] != normalise_postcode(raw)
+    normal = choices[0] if len(choices) == 1 else normalise_postcode(raw)
     if index.knows_postcode(normal):
         return normal, False
-    found = [
+    variants = {
         candidate
-        for candidate in postcode_variants(raw)
-        if index.knows_postcode(candidate)
+        for expanded in bracket_variants(raw)
+        for candidate in postcode_variants(expanded)
+    }
+    found = [
+        candidate for candidate in sorted(variants) if index.knows_postcode(candidate)
     ]
     if len(found) == 1:
         return found[0], found[0] != normal
     return normal, False
 
-
 def canonical_postcode(
     raw: str, online: bool, memory: sqlite3.Connection | None
 ) -> tuple[str, str | None]:
-    normal = normalise_postcode(raw)
+    choices = postcode_choice_candidates(raw)
+    if len(choices) > 1:
+        if online:
+            matches = postcodes_io_bulk(choices)
+            if len(matches) == 1:
+                return matches[0], None
+        return squash(raw), "ambiguous OCR bracket choice in postcode"
+    normal = choices[0] if choices else normalise_postcode(raw)
     if not normal:
         return "", "missing postcode"
     if not valid_postcode(normal):
@@ -1318,7 +1358,6 @@ def canonical_postcode(
                 (normal, canonical, int(time.time())),
             )
     return canonical or normal, None if canonical else "postcode not found"
-
 
 def getaddress_candidates(fragment: str, postcode: str, api_key: str) -> list[dict]:
     term = squash(f"{fragment} {postcode}")
@@ -1370,24 +1409,46 @@ def levenshtein(a: str, b: str) -> int:
     return previous[-1]
 
 
-def bracket_variants(value: str) -> list[str]:
+def bracket_variants(value: str, limit: int = 128) -> list[str]:
+    """Expand OCR choices such as [x/y] or [r/t/k] safely."""
     match = BRACKET_CHOICE_RE.search(value)
     if not match:
         return [value]
     variants: list[str] = []
-    for choice in match.groups():
+    for choice in match.group(1).split("/"):
+        remaining = limit - len(variants)
+        if remaining <= 0:
+            break
         variants.extend(
-            bracket_variants(value[: match.start()] + choice + value[match.end() :])
+            bracket_variants(
+                value[: match.start()] + choice + value[match.end() :], remaining
+            )
         )
-    return variants
+    return list(dict.fromkeys(variants))[:limit]
+
+
+def postcode_choice_candidates(value: str) -> list[str]:
+    """Return distinct, syntactically valid postcodes represented by OCR choices."""
+    return list(
+        dict.fromkeys(
+            normalise_postcode(variant)
+            for variant in bracket_variants(value)
+            if valid_postcode(variant)
+        )
+    )
 
 
 def email_words(email: str) -> list[str]:
-    words = re.findall(r"[a-z]{4,}", ascii_key(email).replace(" ", ""))
-    local_domain = re.split(r"[@._+\-\d]+", email.casefold())
-    words.extend(re.sub(r"[^a-z]", "", w) for w in local_domain)
-    return sorted({w for w in words if len(w) >= 4 and w not in GENERIC_EMAIL_WORDS})
-
+    words: list[str] = []
+    for variant in bracket_variants(email):
+        words.extend(
+            re.findall(r"[a-z]{4,}", ascii_key(variant).replace(" ", ""))
+        )
+        local_domain = re.split(r"[@._+\-\d]+", variant.casefold())
+        words.extend(re.sub(r"[^a-z]", "", word) for word in local_domain)
+    return sorted(
+        {word for word in words if len(word) >= 4 and word not in GENERIC_EMAIL_WORDS}
+    )
 
 def nearest_email_spelling(name: str, email: str) -> tuple[str, float] | None:
     target = ascii_key(name).replace(" ", "")
@@ -1500,9 +1561,21 @@ def basic_clean(raw: Record, row: int, audit: list[Audit], auto_name: bool) -> R
         email_change_reason(result.email, email),
     )
     result.email = email
-    postcode = normalise_postcode(result.postcode)
+    postcode_choices = postcode_choice_candidates(result.postcode)
+    postcode = (
+        postcode_choices[0]
+        if len(postcode_choices) == 1
+        else result.postcode
+        if len(postcode_choices) > 1
+        else normalise_postcode(result.postcode)
+    )
+    postcode_reason = (
+        "unique syntactically valid bracket choice"
+        if len(postcode_choices) == 1 and BRACKET_CHOICE_RE.search(result.postcode)
+        else "postcode formatting"
+    )
     add_change(
-        audit, row, "postcode", result.postcode, postcode, "high", "postcode formatting"
+        audit, row, "postcode", result.postcode, postcode, "high", postcode_reason
     )
     result.postcode = postcode
 
@@ -1756,7 +1829,13 @@ def apply_address_lookups(
 
     candidates = index.by_postcode(postcode) if postcode else []
     if not candidates and record.address:
-        global_candidates = index.global_search(record.address)
+        global_candidates = list(
+            dict.fromkeys(
+                candidate
+                for variant in bracket_variants(record.address)
+                for candidate in index.global_search(variant)
+            )
+        )
         global_choice = choose_address(
             record.address, global_candidates, args.address_threshold
         )
@@ -1926,6 +2005,20 @@ def add_record_review_flags(
             and item.confidence == "unresolved"
             for item in audit
         )
+
+    for field in FIELD_NAMES:
+        value = getattr(record, field)
+        if BRACKET_CHOICE_RE.search(value) and not already_flagged(field):
+            audit.append(
+                Audit(
+                    row_number,
+                    field,
+                    getattr(raw, field),
+                    value,
+                    "unresolved",
+                    "ambiguous OCR bracket choice",
+                )
+            )
 
     if not record.address:
         if not already_flagged("address"):
@@ -2605,9 +2698,24 @@ def self_test() -> int:
         )[0]
         == "60 Aragon Way"
     )
+    assert bracket_variants("Ris[r/t/k]") == ["Risr", "Rist", "Risk"]
+    assert postcode_choice_candidates("CB1 4[L/I]W") == ["CB1 4LW"]
+    assert clean_email("name[x/@]@example.org") == ("namex@example.org", None)
+    assert (
+        clean_email("name[x/y]@example.org")[1]
+        == "ambiguous OCR bracket choice in email"
+    )
+    bracket_address = choose_address(
+        "5 Stanf[o/a]rd Close",
+        [("5 Stanford Close", "PO22 8GD"), ("7 Stanford Close", "PO22 8GD")],
+    )
+    assert (
+        bracket_address
+        and bracket_address[0] == "5 Stanford Close"
+        and bracket_address[3]
+    )
     print("self-test passed", file=sys.stderr)
     return 0
-
 
 def doctor(args: argparse.Namespace) -> int:
     """Explain which capabilities are ready without changing user data."""
@@ -2721,19 +2829,24 @@ def friendly_path(prompt: str) -> Path | None:
 
 
 def friendly_results_directory() -> Path:
-    """Use a predictable user-writable folder without administrator rights."""
+    """Use Documents/AddressMend and migrate a former result folder when possible."""
     documents = Path.home() / "Documents"
     base = documents if documents.is_dir() else Path(__file__).resolve().parent
-    result = base / "AddressMend Results"
+    result = base / "AddressMend"
     legacy_results = (
+        base / "AddressMend Results",
         base / "UK Address Harmoniser Results",
         base / "UK Address Cleaner Results",
     )
     if not result.exists():
-        result = next((path for path in legacy_results if path.is_dir()), result)
+        legacy = next((path for path in legacy_results if path.is_dir()), None)
+        if legacy:
+            try:
+                legacy.rename(result)
+            except OSError:
+                pass
     result.mkdir(parents=True, exist_ok=True)
     return result
-
 
 def friendly_database(results_dir: Path) -> Path | None:
     candidates = (
