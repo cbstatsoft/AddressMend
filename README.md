@@ -224,8 +224,8 @@ addressmend.py         standalone application
 start.cmd              Windows desktop launcher
 start.sh               Linux launcher
 start.command          macOS Finder/Terminal launcher
-INSTALL                 user-local macOS/Linux installer
-UNINSTALL               user-local macOS/Linux uninstaller
+INSTALL                 macOS user/Linux system installer
+UNINSTALL               macOS user/Linux system uninstaller
 ```
 
 The single-file application is intentional: a user in a locked-down work
