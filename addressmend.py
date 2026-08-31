@@ -30,8 +30,8 @@ does not supply house-level street addresses.
 Quick start
 -----------
 
-    # Windows: double-click Start_AddressMend.cmd.
-    # Linux: run ./Start_AddressMend.sh in a terminal.
+    # Windows: double-click start.cmd.
+    # Linux: run ./start.sh in a terminal.
     # With no command-line options, this script opens the same friendly menu.
 
     # Windows PowerShell: clean a file into an Excel-friendly TSV
@@ -92,7 +92,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
-
 VERSION = "1.2.0"
 COPYRIGHT = "Copyright (C) 2026 Connor Baird"
 FIELD_NAMES = ("title", "first_name", "last_name", "address", "postcode", "email")
@@ -113,10 +112,22 @@ HOUSE_RE = re.compile(
 )
 BRACKET_CHOICE_RE = re.compile(r"\[([^]/\]]+)/([^\]]+)]")
 COMMON_DOMAINS = (
-    "gmail.com", "googlemail.com", "hotmail.com", "hotmail.co.uk",
-    "outlook.com", "outlook.co.uk", "yahoo.com", "yahoo.co.uk",
-    "icloud.com", "aol.com", "aol.co.uk", "btinternet.com",
-    "btopenworld.com", "sky.com", "live.co.uk", "virginmedia.com",
+    "gmail.com",
+    "googlemail.com",
+    "hotmail.com",
+    "hotmail.co.uk",
+    "outlook.com",
+    "outlook.co.uk",
+    "yahoo.com",
+    "yahoo.co.uk",
+    "icloud.com",
+    "aol.com",
+    "aol.co.uk",
+    "btinternet.com",
+    "btopenworld.com",
+    "sky.com",
+    "live.co.uk",
+    "virginmedia.com",
 )
 STREET_SUFFIX_RE = re.compile(
     r"\b(?:road|street|lane|avenue|drive|close|way|place|crescent|terrace|gardens|"
@@ -186,13 +197,34 @@ official pages for EPC, FSA and Code-Point Open where selection, sign-in or
 licence acceptance must remain under the user's control.
 """
 PROFILE_RANKS = {
-    "generic": 90, "epc": 85, "hmlr": 80, "osm": 70,
-    "companies-house": 60, "fhrs": 60,
+    "generic": 90,
+    "epc": 85,
+    "hmlr": 80,
+    "osm": 70,
+    "companies-house": 60,
+    "fhrs": 60,
 }
 GENERIC_EMAIL_WORDS = {
-    "gmail", "googlemail", "hotmail", "outlook", "yahoo", "icloud", "aol",
-    "btinternet", "btopenworld", "sky", "live", "mail", "email", "virgin",
-    "virginmedia", "co", "com", "org", "net", "uk",
+    "gmail",
+    "googlemail",
+    "hotmail",
+    "outlook",
+    "yahoo",
+    "icloud",
+    "aol",
+    "btinternet",
+    "btopenworld",
+    "sky",
+    "live",
+    "mail",
+    "email",
+    "virgin",
+    "virginmedia",
+    "co",
+    "com",
+    "org",
+    "net",
+    "uk",
 }
 
 
@@ -267,7 +299,9 @@ def unwrap_email(value: str) -> str:
         if (
             middle
             and all(re.fullmatch(r"[A-Z0-9._+-]+", part, re.I) for part in middle)
-            and any(levenshtein(possible_domain, domain) <= 1 for domain in COMMON_DOMAINS)
+            and any(
+                levenshtein(possible_domain, domain) <= 1 for domain in COMMON_DOMAINS
+            )
         ):
             value = "".join(parts[:-1]) + "@" + parts[-1]
     if value.count("@") == 1:
@@ -351,7 +385,9 @@ def uncommon_email_domain_status(
             return str(saved["status"]), str(saved["reason"])
 
     status = "unavailable"
-    reason = "uncommon email domain could not be checked because DNS lookup was unavailable"
+    reason = (
+        "uncommon email domain could not be checked because DNS lookup was unavailable"
+    )
     try:
         mx_url = "https://dns.google/resolve?" + urllib.parse.urlencode(
             {"name": query, "type": "MX", "cd": "false", "do": "false"}
@@ -362,11 +398,13 @@ def uncommon_email_domain_status(
             reason = "uncommon email domain does not exist (DNS NXDOMAIN)"
         else:
             mx_answers = [
-                answer for answer in mx.get("Answer", [])
+                answer
+                for answer in mx.get("Answer", [])
                 if int(answer.get("type", -1)) == 15
             ]
             usable_mx = [
-                answer for answer in mx_answers
+                answer
+                for answer in mx_answers
                 if not str(answer.get("data", "")).strip().endswith(" .")
             ]
             if usable_mx:
@@ -374,13 +412,20 @@ def uncommon_email_domain_status(
                 reason = "uncommon email domain has a DNS MX mail record"
             elif mx_answers:
                 status = "invalid"
-                reason = "email domain publishes a null MX record and does not accept email"
+                reason = (
+                    "email domain publishes a null MX record and does not accept email"
+                )
             else:
                 # RFC mail delivery permits an address-record fallback when MX
                 # is absent, so do not reject a domain solely for missing MX.
                 for record_type in ("A", "AAAA"):
                     url = "https://dns.google/resolve?" + urllib.parse.urlencode(
-                        {"name": query, "type": record_type, "cd": "false", "do": "false"}
+                        {
+                            "name": query,
+                            "type": record_type,
+                            "cd": "false",
+                            "do": "false",
+                        }
                     )
                     answer = http_json(url)
                     if int(answer.get("Status", -1)) == 0 and answer.get("Answer"):
@@ -505,7 +550,9 @@ def _start_clipboard_owner(command: Sequence[str], value: str) -> None:
     if process.poll() not in {None, 0}:
         raise OSError("clipboard helper stopped before owning the clipboard")
     _CLIPBOARD_OWNERS.append(process)
-    _CLIPBOARD_OWNERS[:] = [owner for owner in _CLIPBOARD_OWNERS if owner.poll() is None]
+    _CLIPBOARD_OWNERS[:] = [
+        owner for owner in _CLIPBOARD_OWNERS if owner.poll() is None
+    ]
 
 
 def _tk_clipboard_set_persistent(value: str) -> None:
@@ -528,7 +575,11 @@ root.mainloop()
 def clipboard_get() -> str:
     """Read text from Windows, Wayland or X11 without extra Python packages."""
     try:
-        if os.name != "nt" and os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-paste"):
+        if (
+            os.name != "nt"
+            and os.environ.get("WAYLAND_DISPLAY")
+            and shutil.which("wl-paste")
+        ):
             result = subprocess.run(
                 ["wl-paste", "--no-newline"],
                 check=True,
@@ -634,9 +685,14 @@ def read_records(path: str) -> list[Record]:
     if rows and looks_like_header(rows[0]):
         header = [ascii_key(x).replace(" ", "_") for x in rows.pop(0)]
         aliases = {
-            "firstname": "first_name", "first": "first_name", "given_name": "first_name",
-            "lastname": "last_name", "last": "last_name", "surname": "last_name",
-            "email_address": "email", "address_line": "address",
+            "firstname": "first_name",
+            "first": "first_name",
+            "given_name": "first_name",
+            "lastname": "last_name",
+            "last": "last_name",
+            "surname": "last_name",
+            "email_address": "email",
+            "address_line": "address",
         }
         mapped: list[Record] = []
         for row in rows:
@@ -653,7 +709,9 @@ def write_records(records: Sequence[Record], path: str, header: bool = False) ->
     elif path == "-":
         stream = sys.stdout
     else:
-        stream = open(path, "w", encoding="utf-8-sig" if os.name == "nt" else "utf-8", newline="")
+        stream = open(
+            path, "w", encoding="utf-8-sig" if os.name == "nt" else "utf-8", newline=""
+        )
     try:
         writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
         if header:
@@ -667,7 +725,9 @@ def write_records(records: Sequence[Record], path: str, header: bool = False) ->
 
 
 def write_audit(audit: Sequence[Audit], path: str) -> None:
-    with open(path, "w", encoding="utf-8-sig" if os.name == "nt" else "utf-8", newline="") as stream:
+    with open(
+        path, "w", encoding="utf-8-sig" if os.name == "nt" else "utf-8", newline=""
+    ) as stream:
         writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
         writer.writerow([f.name for f in fields(Audit)])
         writer.writerows([getattr(a, f.name) for f in fields(Audit)] for a in audit)
@@ -677,8 +737,7 @@ def connect_memory(path: str | None) -> sqlite3.Connection | None:
     if not path:
         return None
     db = sqlite3.connect(path)
-    db.executescript(
-        """
+    db.executescript("""
         CREATE TABLE IF NOT EXISTS record_overrides(
             raw_key TEXT PRIMARY KEY, approved_json TEXT NOT NULL, learned_at INTEGER NOT NULL
         );
@@ -698,15 +757,16 @@ def connect_memory(path: str | None) -> sqlite3.Connection | None:
             provider TEXT NOT NULL, query TEXT NOT NULL, payload TEXT NOT NULL,
             checked_at INTEGER NOT NULL, PRIMARY KEY(provider,query)
         );
-        """
-    )
+        """)
     return db
 
 
 def learn(raw_path: str, approved_path: str, memory_path: str) -> int:
     raw, approved = read_records(raw_path), read_records(approved_path)
     if len(raw) != len(approved):
-        raise SystemExit(f"row-count mismatch: raw={len(raw)}, approved={len(approved)}")
+        raise SystemExit(
+            f"row-count mismatch: raw={len(raw)}, approved={len(approved)}"
+        )
     db = connect_memory(memory_path)
     assert db is not None
     now = int(time.time())
@@ -719,13 +779,21 @@ def learn(raw_path: str, approved_path: str, memory_path: str) -> int:
             )
             email = clean_email(before.email)[0].casefold()
             if email and EMAIL_RE.fullmatch(email):
-                db.execute("INSERT OR REPLACE INTO people VALUES(?,?,?)", (email, payload, now))
+                db.execute(
+                    "INSERT OR REPLACE INTO people VALUES(?,?,?)", (email, payload, now)
+                )
             raw_pc = normalise_postcode(before.postcode)
             raw_address = ascii_key(before.address)
             if raw_address and after.address and after.postcode:
                 db.execute(
                     "INSERT OR REPLACE INTO address_memory VALUES(?,?,?,?,?)",
-                    (raw_pc, raw_address, after.address, normalise_postcode(after.postcode), now),
+                    (
+                        raw_pc,
+                        raw_address,
+                        after.address,
+                        normalise_postcode(after.postcode),
+                        now,
+                    ),
                 )
     db.close()
     print(f"learned {len(raw)} aligned rows into {memory_path}", file=sys.stderr)
@@ -768,9 +836,12 @@ class AddressIndex:
                 "SELECT 1 FROM addresses WHERE postcode=? LIMIT 1", (canonical,)
             ).fetchone():
                 return True
-            return bool(self.db.execute(
-                "SELECT 1 FROM postcode_reference WHERE postcode=? LIMIT 1", (canonical,)
-            ).fetchone())
+            return bool(
+                self.db.execute(
+                    "SELECT 1 FROM postcode_reference WHERE postcode=? LIMIT 1",
+                    (canonical,),
+                ).fetchone()
+            )
         except sqlite3.Error:
             return False
 
@@ -783,14 +854,18 @@ class AddressIndex:
                 "ORDER BY COALESCE(source_rank,50) DESC LIMIT 1",
                 (normalise_postcode(postcode), address),
             ).fetchone()
-            return f"offline address index [{row[0]}]" if row else "offline address index"
+            return (
+                f"offline address index [{row[0]}]" if row else "offline address index"
+            )
         except sqlite3.Error:
             return "offline address index"
 
     def global_search(self, fragment: str, limit: int = 30) -> list[tuple[str, str]]:
         if not self.db or len(ascii_key(fragment)) < 5:
             return []
-        tokens = [t for t in ascii_key(fragment).split() if not t.isdigit() and len(t) >= 3]
+        tokens = [
+            t for t in ascii_key(fragment).split() if not t.isdigit() and len(t) >= 3
+        ]
         if not tokens:
             return []
         query = " AND ".join(f'"{t}"' for t in tokens[:6])
@@ -862,7 +937,8 @@ def street_consensus_suggestion(
         street = street_component(candidate)
         if street:
             streets[(ascii_key(street), normalise_postcode(postcode))] = (
-                street, normalise_postcode(postcode)
+                street,
+                normalise_postcode(postcode),
             )
     if len(streets) != 1:
         return None
@@ -896,11 +972,16 @@ def score_address(fragment: str, candidate: str) -> float:
     # A supplied building/street fragment is often followed by locality text in
     # the canonical result. Compare it with individual comma-separated address
     # components so that a small OCR error is not drowned out by that suffix.
-    components = [ascii_key(part) for part in squash(candidate).split(",") if ascii_key(part)]
+    components = [
+        ascii_key(part) for part in squash(candidate).split(",") if ascii_key(part)
+    ]
     if components:
         ratio = max(
             ratio,
-            max(difflib.SequenceMatcher(None, f, component).ratio() for component in components),
+            max(
+                difflib.SequenceMatcher(None, f, component).ratio()
+                for component in components
+            ),
         )
     if c.startswith(f + " ") or f.startswith(c + " "):
         ratio = max(ratio, 0.96)
@@ -917,7 +998,9 @@ def score_address(fragment: str, candidate: str) -> float:
     return max(0.0, min(1.0, ratio))
 
 
-def address_match_reason(fragment: str, candidate: str, source: str, postcode: str) -> str:
+def address_match_reason(
+    fragment: str, candidate: str, source: str, postcode: str
+) -> str:
     """Describe how a postcode-constrained address candidate changed the input."""
     fragment_key = ascii_key(fragment)
     candidate_key = ascii_key(candidate)
@@ -940,22 +1023,28 @@ def choose_address(
 ) -> tuple[str, str, float, bool] | None:
     unique = list(dict.fromkeys(candidates))
     ranked = sorted(
-        ((score_address(fragment, address), address, postcode) for address, postcode in unique),
+        (
+            (score_address(fragment, address), address, postcode)
+            for address, postcode in unique
+        ),
         reverse=True,
     )
     if not ranked:
         return None
     best = ranked[0]
     second = ranked[1][0] if len(ranked) > 1 else 0.0
-    exact_house = house_key(fragment) and sum(
-        house_key(fragment) == house_key(address) for address, _ in unique
-    ) == 1
+    exact_house = (
+        house_key(fragment)
+        and sum(house_key(fragment) == house_key(address) for address, _ in unique) == 1
+    )
     strong_score = best[0] >= threshold
     # A unique matching house/flat number within the supplied postcode is
     # strong independent evidence, so permit a small score allowance for OCR
     # damage in the following street text. Low-similarity street names still fail.
     ocr_house_score = bool(exact_house and best[0] >= max(0.78, threshold - 0.06))
-    accepted = (strong_score or ocr_house_score) and (exact_house or best[0] - second >= 0.07)
+    accepted = (strong_score or ocr_house_score) and (
+        exact_house or best[0] - second >= 0.07
+    )
     return best[1], normalise_postcode(best[2]), best[0], accepted
 
 
@@ -970,7 +1059,8 @@ def http_json(url: str, timeout: float = 10.0) -> dict:
 def http_json_post(url: str, payload: dict, timeout: float = 15.0) -> dict:
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
-        url, data=body,
+        url,
+        data=body,
         headers={
             "User-Agent": f"AddressMend/{VERSION} (desktop data cleaner)",
             "Content-Type": "application/json",
@@ -1112,7 +1202,11 @@ def nominatim_address_lookup(
         with memory:
             memory.execute(
                 "INSERT OR REPLACE INTO online_cache VALUES('nominatim-address',?,?,?)",
-                (cache_key, json.dumps(list(answer) if answer else []), int(time.time())),
+                (
+                    cache_key,
+                    json.dumps(list(answer) if answer else []),
+                    int(time.time()),
+                ),
             )
     return answer
 
@@ -1131,7 +1225,9 @@ def postcodes_io_bulk(postcodes: Sequence[str]) -> list[str]:
     if not postcodes:
         return []
     try:
-        data = http_json_post("https://api.postcodes.io/postcodes", {"postcodes": list(postcodes[:100])})
+        data = http_json_post(
+            "https://api.postcodes.io/postcodes", {"postcodes": list(postcodes[:100])}
+        )
     except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
         return []
     found: list[str] = []
@@ -1144,9 +1240,18 @@ def postcodes_io_bulk(postcodes: Sequence[str]) -> list[str]:
 
 
 OCR_POSTCODE_SWAPS = {
-    "0": "ODQ", "O": "0Q", "1": "IL", "I": "1L", "L": "1I",
-    "2": "Z", "5": "S", "S": "5", "6": "G", "G": "6",
-    "8": "B", "B": "8",
+    "0": "ODQ",
+    "O": "0Q",
+    "1": "IL",
+    "I": "1L",
+    "L": "1I",
+    "2": "Z",
+    "5": "S",
+    "S": "5",
+    "6": "G",
+    "G": "6",
+    "8": "B",
+    "B": "8",
 }
 
 
@@ -1155,7 +1260,9 @@ def postcode_variants(value: str, limit: int = 40) -> list[str]:
     variants = {normalise_postcode(compact)} if compact else set()
     for i, char in enumerate(compact):
         for replacement in OCR_POSTCODE_SWAPS.get(char, ""):
-            variants.add(normalise_postcode(compact[:i] + replacement + compact[i + 1 :]))
+            variants.add(
+                normalise_postcode(compact[:i] + replacement + compact[i + 1 :])
+            )
             if len(variants) >= limit:
                 break
         if len(variants) >= limit:
@@ -1172,7 +1279,11 @@ def offline_postcode_correction(raw: str, index: AddressIndex) -> tuple[str, boo
     normal = normalise_postcode(raw)
     if index.knows_postcode(normal):
         return normal, False
-    found = [candidate for candidate in postcode_variants(raw) if index.knows_postcode(candidate)]
+    found = [
+        candidate
+        for candidate in postcode_variants(raw)
+        if index.knows_postcode(candidate)
+    ]
     if len(found) == 1:
         return found[0], found[0] != normal
     return normal, False
@@ -1214,7 +1325,8 @@ def getaddress_candidates(fragment: str, postcode: str, api_key: str) -> list[di
     url = (
         "https://api.getAddress.io/autocomplete/"
         + urllib.parse.quote(term, safe="")
-        + "?api-key=" + urllib.parse.quote(api_key, safe="")
+        + "?api-key="
+        + urllib.parse.quote(api_key, safe="")
         + "&all=true&show-postcode=true"
     )
     try:
@@ -1228,14 +1340,18 @@ def resolve_getaddress(suggestion: dict, api_key: str) -> tuple[str, str] | None
     if not identity:
         return None
     url = (
-        "https://api.getAddress.io/get/" + urllib.parse.quote(str(identity), safe="")
-        + "?api-key=" + urllib.parse.quote(api_key, safe="")
+        "https://api.getAddress.io/get/"
+        + urllib.parse.quote(str(identity), safe="")
+        + "?api-key="
+        + urllib.parse.quote(api_key, safe="")
     )
     try:
         data = http_json(url)
     except (urllib.error.URLError, TimeoutError, ValueError):
         return None
-    parts = [squash(data.get(k, "")) for k in ("line_1", "line_2", "line_3", "locality")]
+    parts = [
+        squash(data.get(k, "")) for k in ("line_1", "line_2", "line_3", "locality")
+    ]
     address = ", ".join(dict.fromkeys(p for p in parts if p))
     return address, normalise_postcode(data.get("postcode", ""))
 
@@ -1247,7 +1363,9 @@ def levenshtein(a: str, b: str) -> int:
     for i, ca in enumerate(a, 1):
         current = [i]
         for j, cb in enumerate(b, 1):
-            current.append(min(current[-1] + 1, previous[j] + 1, previous[j - 1] + (ca != cb)))
+            current.append(
+                min(current[-1] + 1, previous[j] + 1, previous[j - 1] + (ca != cb))
+            )
         previous = current
     return previous[-1]
 
@@ -1258,7 +1376,9 @@ def bracket_variants(value: str) -> list[str]:
         return [value]
     variants: list[str] = []
     for choice in match.groups():
-        variants.extend(bracket_variants(value[: match.start()] + choice + value[match.end() :]))
+        variants.extend(
+            bracket_variants(value[: match.start()] + choice + value[match.end() :])
+        )
     return variants
 
 
@@ -1342,16 +1462,26 @@ def apply_person_memory(
         old, new = getattr(record, field), getattr(approved, field)
         if new:
             add_change(
-                audit, row_number, field, old, new,
-                "learned", "approved person spelling matched by exact email",
+                audit,
+                row_number,
+                field,
+                old,
+                new,
+                "learned",
+                "approved person spelling matched by exact email",
             )
             setattr(record, field, new)
     return record
 
 
 def add_change(
-    audit: list[Audit], row: int, field: str, old: str, new: str,
-    confidence: str, reason: str,
+    audit: list[Audit],
+    row: int,
+    field: str,
+    old: str,
+    new: str,
+    confidence: str,
+    reason: str,
 ) -> None:
     if old != new:
         audit.append(Audit(row, field, old, new, confidence, reason))
@@ -1361,12 +1491,19 @@ def basic_clean(raw: Record, row: int, audit: list[Audit], auto_name: bool) -> R
     result = Record(*[squash(v) for v in raw.values()])
     email, email_problem = clean_email(result.email)
     add_change(
-        audit, row, "email", result.email, email, email_change_confidence(result.email),
+        audit,
+        row,
+        "email",
+        result.email,
+        email,
+        email_change_confidence(result.email),
         email_change_reason(result.email, email),
     )
     result.email = email
     postcode = normalise_postcode(result.postcode)
-    add_change(audit, row, "postcode", result.postcode, postcode, "high", "postcode formatting")
+    add_change(
+        audit, row, "postcode", result.postcode, postcode, "high", "postcode formatting"
+    )
     result.postcode = postcode
 
     for field in ("first_name", "last_name"):
@@ -1374,43 +1511,89 @@ def basic_clean(raw: Record, row: int, audit: list[Audit], auto_name: bool) -> R
         variants = bracket_variants(value)
         if len(variants) > 1:
             scored = sorted(
-                ((max((difflib.SequenceMatcher(None, ascii_key(v).replace(' ', ''), w).ratio()
-                       for w in email_words(email)), default=0.0), v) for v in variants),
+                (
+                    (
+                        max(
+                            (
+                                difflib.SequenceMatcher(
+                                    None, ascii_key(v).replace(" ", ""), w
+                                ).ratio()
+                                for w in email_words(email)
+                            ),
+                            default=0.0,
+                        ),
+                        v,
+                    )
+                    for v in variants
+                ),
                 reverse=True,
             )
-            if scored[0][0] >= 0.82 and (len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.08):
-                add_change(audit, row, field, value, scored[0][1], "high", "bracket choice supported by email")
+            if scored[0][0] >= 0.82 and (
+                len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.08
+            ):
+                add_change(
+                    audit,
+                    row,
+                    field,
+                    value,
+                    scored[0][1],
+                    "high",
+                    "bracket choice supported by email",
+                )
                 setattr(result, field, scored[0][1])
             else:
-                audit.append(Audit(row, field, value, value, "unresolved", "ambiguous OCR bracket choice"))
+                audit.append(
+                    Audit(
+                        row,
+                        field,
+                        value,
+                        value,
+                        "unresolved",
+                        "ambiguous OCR bracket choice",
+                    )
+                )
 
     if auto_name and "[" not in result.last_name:
         spelling = nearest_email_spelling(result.last_name, result.email)
         if spelling:
             replacement, score = spelling
             add_change(
-                audit, row, "last_name", result.last_name, replacement,
-                f"{score:.2f}", "one-edit surname correction supported by email",
+                audit,
+                row,
+                "last_name",
+                result.last_name,
+                replacement,
+                f"{score:.2f}",
+                "one-edit surname correction supported by email",
             )
             result.last_name = replacement
     if email_problem:
-        audit.append(Audit(row, "email", raw.email, result.email, "unresolved", email_problem))
+        audit.append(
+            Audit(row, "email", raw.email, result.email, "unresolved", email_problem)
+        )
     return result
 
 
-def explain_row(args: argparse.Namespace, row: int, record: Record, events: Sequence[Audit]) -> None:
+def explain_row(
+    args: argparse.Namespace, row: int, record: Record, events: Sequence[Audit]
+) -> None:
     if not getattr(args, "explain", False) or getattr(args, "quiet", False):
         return
     label = squash(f"{record.first_name} {record.last_name}") or "unnamed record"
     changes = [
-        e for e in events
-        if e.original != e.cleaned and e.confidence not in {"unresolved", "review", "formatting"}
+        e
+        for e in events
+        if e.original != e.cleaned
+        and e.confidence not in {"unresolved", "review", "formatting"}
     ]
     formatting = [e for e in events if e.confidence == "formatting"]
     reviews = [e for e in events if e.confidence == "review"]
     verified = [e for e in events if e.confidence == "verified"]
     unresolved = [e for e in events if e.confidence == "unresolved"]
-    print(f"row {row}: {label} -> {record.address or '[no address]'}, {record.postcode or '[no postcode]'}", file=sys.stderr)
+    print(
+        f"row {row}: {label} -> {record.address or '[no address]'}, {record.postcode or '[no postcode]'}",
+        file=sys.stderr,
+    )
     for event in changes:
         print(
             f"  changed {event.field}: {event.original!r} -> {event.cleaned!r} "
@@ -1426,7 +1609,10 @@ def explain_row(args: argparse.Namespace, row: int, record: Record, events: Sequ
             file=sys.stderr,
         )
     for event in verified:
-        print(f"  verified {event.field}: {event.cleaned!r} ({event.reason})", file=sys.stderr)
+        print(
+            f"  verified {event.field}: {event.cleaned!r} ({event.reason})",
+            file=sys.stderr,
+        )
     for event in unresolved:
         print(f"  needs review: {event.field} — {event.reason}", file=sys.stderr)
 
@@ -1454,7 +1640,9 @@ def explain_active_sources(
         active.append("postcodes.io validation")
     if getattr(args, "validate_email_domains", False):
         active.append("uncommon email-domain DNS validation")
-    print(f"read {row_count} rows; active sources: {', '.join(active)}", file=sys.stderr)
+    print(
+        f"read {row_count} rows; active sources: {', '.join(active)}", file=sys.stderr
+    )
     if args.doogal:
         print(
             "Doogal receives postcodes only; calls are sequential, delayed and "
@@ -1489,12 +1677,22 @@ def apply_address_lookups(
     if remembered:
         address, postcode = remembered
         add_change(
-            audit, row_number, "address", record.address, address,
-            "learned", "approved address memory",
+            audit,
+            row_number,
+            "address",
+            record.address,
+            address,
+            "learned",
+            "approved address memory",
         )
         add_change(
-            audit, row_number, "postcode", record.postcode, postcode,
-            "learned", "approved address memory",
+            audit,
+            row_number,
+            "postcode",
+            record.postcode,
+            postcode,
+            "learned",
+            "approved address memory",
         )
         record.address, record.postcode = address, postcode
         return record
@@ -1502,14 +1700,26 @@ def apply_address_lookups(
     offline_pc, corrected = offline_postcode_correction(record.postcode, index)
     if corrected:
         add_change(
-            audit, row_number, "postcode", record.postcode, offline_pc,
-            "high", "unique one-character OCR match in offline index",
+            audit,
+            row_number,
+            "postcode",
+            record.postcode,
+            offline_pc,
+            "high",
+            "unique one-character OCR match in offline index",
         )
         record.postcode = offline_pc
-    postcode, problem = canonical_postcode(record.postcode, args.online_validate, memory)
+    postcode, problem = canonical_postcode(
+        record.postcode, args.online_validate, memory
+    )
     add_change(
-        audit, row_number, "postcode", record.postcode, postcode,
-        "high", "canonical postcode",
+        audit,
+        row_number,
+        "postcode",
+        record.postcode,
+        postcode,
+        "high",
+        "canonical postcode",
     )
     record.postcode = postcode
 
@@ -1524,12 +1734,22 @@ def apply_address_lookups(
         if found:
             found_address, found_postcode = found
             add_change(
-                audit, row_number, "address", record.address, found_address,
-                "review", "matched by OpenStreetMap/Nominatim; confirm before relying on it",
+                audit,
+                row_number,
+                "address",
+                record.address,
+                found_address,
+                "review",
+                "matched by OpenStreetMap/Nominatim; confirm before relying on it",
             )
             add_change(
-                audit, row_number, "postcode", record.postcode, found_postcode,
-                "review", "postcode found by OpenStreetMap/Nominatim address search",
+                audit,
+                row_number,
+                "postcode",
+                record.postcode,
+                found_postcode,
+                "review",
+                "postcode found by OpenStreetMap/Nominatim address search",
             )
             record.address, record.postcode = found_address, found_postcode
             postcode, problem = found_postcode, None
@@ -1537,7 +1757,9 @@ def apply_address_lookups(
     candidates = index.by_postcode(postcode) if postcode else []
     if not candidates and record.address:
         global_candidates = index.global_search(record.address)
-        global_choice = choose_address(record.address, global_candidates, args.address_threshold)
+        global_choice = choose_address(
+            record.address, global_candidates, args.address_threshold
+        )
         if global_choice and global_choice[3]:
             candidates = [(global_choice[0], global_choice[1])]
 
@@ -1546,14 +1768,26 @@ def apply_address_lookups(
     if choice and choice[3]:
         address, resolved_pc, score, _ = choice
         source_reason = index.source_for(resolved_pc, address)
-        match_reason = address_match_reason(record.address, address, source_reason, resolved_pc)
-        add_change(
-            audit, row_number, "address", record.address, address,
-            f"{score:.2f}", match_reason,
+        match_reason = address_match_reason(
+            record.address, address, source_reason, resolved_pc
         )
         add_change(
-            audit, row_number, "postcode", record.postcode, resolved_pc,
-            f"{score:.2f}", source_reason,
+            audit,
+            row_number,
+            "address",
+            record.address,
+            address,
+            f"{score:.2f}",
+            match_reason,
+        )
+        add_change(
+            audit,
+            row_number,
+            "postcode",
+            record.postcode,
+            resolved_pc,
+            f"{score:.2f}",
+            source_reason,
         )
         record.address, record.postcode = address, resolved_pc
         address_matched = True
@@ -1568,12 +1802,22 @@ def apply_address_lookups(
                 record.address, address, "Doogal known addresses", resolved_pc
             )
             add_change(
-                audit, row_number, "address", record.address, address,
-                f"{score:.2f}", match_reason,
+                audit,
+                row_number,
+                "address",
+                record.address,
+                address,
+                f"{score:.2f}",
+                match_reason,
             )
             add_change(
-                audit, row_number, "postcode", record.postcode, resolved_pc,
-                "high", "Doogal postcode API",
+                audit,
+                row_number,
+                "postcode",
+                record.postcode,
+                resolved_pc,
+                "high",
+                "Doogal postcode API",
             )
             record.address, record.postcode = address, resolved_pc
             address_matched = True
@@ -1583,33 +1827,53 @@ def apply_address_lookups(
             if base:
                 address, resolved_pc = base
                 add_change(
-                    audit, row_number, "address", record.address, address,
-                    "high", "completed the sole shared base address in Doogal; flat was not supplied",
+                    audit,
+                    row_number,
+                    "address",
+                    record.address,
+                    address,
+                    "high",
+                    "completed the sole shared base address in Doogal; flat was not supplied",
                 )
                 record.address, record.postcode = address, resolved_pc
                 address_matched = True
             elif suggestion:
                 address, resolved_pc, score = suggestion
                 add_change(
-                    audit, row_number, "address", record.address, address,
+                    audit,
+                    row_number,
+                    "address",
+                    record.address,
+                    address,
                     "review",
                     "harmonised with the sole Doogal street; the supplied premise was absent from its list",
                 )
                 add_change(
-                    audit, row_number, "postcode", record.postcode, resolved_pc,
-                    "verified", "Doogal postcode API",
+                    audit,
+                    row_number,
+                    "postcode",
+                    record.postcode,
+                    resolved_pc,
+                    "verified",
+                    "Doogal postcode API",
                 )
                 record.address, record.postcode = address, resolved_pc
                 address_matched = True
 
     if api_key and record.postcode and not address_matched:
         suggestions = getaddress_candidates(record.address, record.postcode, api_key)
-        displayed = [(squash(item.get("address", "")), record.postcode) for item in suggestions]
+        displayed = [
+            (squash(item.get("address", "")), record.postcode) for item in suggestions
+        ]
         api_choice = choose_address(record.address, displayed, args.address_threshold)
         if api_choice and api_choice[3]:
             selected_address = api_choice[0]
             selected = next(
-                (item for item in suggestions if squash(item.get("address", "")) == selected_address),
+                (
+                    item
+                    for item in suggestions
+                    if squash(item.get("address", "")) == selected_address
+                ),
                 None,
             )
             resolved = resolve_getaddress(selected, api_key) if selected else None
@@ -1619,18 +1883,35 @@ def apply_address_lookups(
                     record.address, address, "getAddress.io", resolved_pc
                 )
                 add_change(
-                    audit, row_number, "address", record.address, address,
-                    f"{api_choice[2]:.2f}", match_reason,
+                    audit,
+                    row_number,
+                    "address",
+                    record.address,
+                    address,
+                    f"{api_choice[2]:.2f}",
+                    match_reason,
                 )
                 add_change(
-                    audit, row_number, "postcode", record.postcode, resolved_pc,
-                    "high", "getAddress.io",
+                    audit,
+                    row_number,
+                    "postcode",
+                    record.postcode,
+                    resolved_pc,
+                    "high",
+                    "getAddress.io",
                 )
                 record.address, record.postcode = address, resolved_pc
 
     if problem and not valid_postcode(record.postcode):
         audit.append(
-            Audit(row_number, "postcode", raw.postcode, record.postcode, "unresolved", problem)
+            Audit(
+                row_number,
+                "postcode",
+                raw.postcode,
+                record.postcode,
+                "unresolved",
+                problem,
+            )
         )
     return record
 
@@ -1640,26 +1921,38 @@ def add_record_review_flags(
 ) -> None:
     def already_flagged(field: str) -> bool:
         return any(
-            item.row == row_number and item.field == field and item.confidence == "unresolved"
+            item.row == row_number
+            and item.field == field
+            and item.confidence == "unresolved"
             for item in audit
         )
 
     if not record.address:
         if not already_flagged("address"):
-            audit.append(Audit(row_number, "address", "", "", "unresolved", "missing address"))
+            audit.append(
+                Audit(row_number, "address", "", "", "unresolved", "missing address")
+            )
     elif re.fullmatch(r"\d+[A-Z]?", record.address, re.I):
         if not already_flagged("address"):
             audit.append(
                 Audit(
-                    row_number, "address", record.address, record.address,
-                    "unresolved", "house number only",
+                    row_number,
+                    "address",
+                    record.address,
+                    record.address,
+                    "unresolved",
+                    "house number only",
                 )
             )
     if not valid_postcode(record.postcode) and not already_flagged("postcode"):
         audit.append(
             Audit(
-                row_number, "postcode", raw.postcode, record.postcode,
-                "unresolved", "invalid or missing postcode",
+                row_number,
+                "postcode",
+                raw.postcode,
+                record.postcode,
+                "unresolved",
+                "invalid or missing postcode",
             )
         )
 
@@ -1683,14 +1976,24 @@ def harmonise_household_surnames(output: Sequence[Record], audit: list[Audit]) -
                     or candidate == current.last_name
                 ):
                     continue
-                current_key, candidate_key = ascii_key(current.last_name), ascii_key(candidate)
+                current_key, candidate_key = ascii_key(current.last_name), ascii_key(
+                    candidate
+                )
                 email_key = ascii_key(current.email).replace(" ", "")
-                if levenshtein(current_key, candidate_key) == 1 and candidate_key in email_key:
+                if (
+                    levenshtein(current_key, candidate_key) == 1
+                    and candidate_key in email_key
+                ):
                     old = current.last_name
                     current.last_name = candidate
                     add_change(
-                        audit, current_index + 1, "last_name", old, candidate,
-                        "high", "same-household spelling supported by email",
+                        audit,
+                        current_index + 1,
+                        "last_name",
+                        old,
+                        candidate,
+                        "high",
+                        "same-household spelling supported by email",
                     )
                     break
 
@@ -1699,7 +2002,9 @@ def clean_records(args: argparse.Namespace) -> int:
     raw_records = read_records(args.input)
     memory = connect_memory(args.memory)
     index = AddressIndex(args.db)
-    api_key = os.environ.get(args.getaddress_key_env, "") if args.getaddress_key_env else ""
+    api_key = (
+        os.environ.get(args.getaddress_key_env, "") if args.getaddress_key_env else ""
+    )
     audit: list[Audit] = []
     output: list[Record] = []
 
@@ -1711,7 +2016,15 @@ def clean_records(args: argparse.Namespace) -> int:
         if override:
             output.append(override)
             for field, old, new in zip(FIELD_NAMES, raw.values(), override.values()):
-                add_change(audit, row_number, field, old, new, "learned", "exact approved-row memory")
+                add_change(
+                    audit,
+                    row_number,
+                    field,
+                    old,
+                    new,
+                    "learned",
+                    "exact approved-row memory",
+                )
             if getattr(args, "validate_email_domains", False):
                 audit_uncommon_email_domain(override, row_number, audit, memory)
             explain_row(args, row_number, override, audit[audit_start:])
@@ -1786,10 +2099,18 @@ def delimited_streams(path: str) -> Iterator[tuple[str, io.TextIOBase]]:
     if zipfile.is_zipfile(path):
         with zipfile.ZipFile(path) as archive:
             for member in archive.infolist():
-                if member.is_dir() or Path(member.filename).suffix.lower() not in {".csv", ".tsv", ".txt", ".xml", ".osm"}:
+                if member.is_dir() or Path(member.filename).suffix.lower() not in {
+                    ".csv",
+                    ".tsv",
+                    ".txt",
+                    ".xml",
+                    ".osm",
+                }:
                     continue
                 with archive.open(member) as raw:
-                    with io.TextIOWrapper(raw, encoding="utf-8-sig", errors="replace", newline="") as stream:
+                    with io.TextIOWrapper(
+                        raw, encoding="utf-8-sig", errors="replace", newline=""
+                    ) as stream:
                         yield f"{Path(path).name}:{member.filename}", stream
     else:
         with open(path, encoding="utf-8-sig", errors="replace", newline="") as stream:
@@ -1816,8 +2137,11 @@ def get_ci(row: dict[str, object], *names: str) -> str:
 
 
 def csv_profile_rows(
-    stream: io.TextIOBase, profile: str, postcode_column: str,
-    address_columns: Sequence[str], source_label: str,
+    stream: io.TextIOBase,
+    profile: str,
+    postcode_column: str,
+    address_columns: Sequence[str],
+    source_label: str,
 ) -> Iterator[tuple[str, str, str]]:
     if profile == "hmlr":
         reader = csv.reader(stream)
@@ -1833,16 +2157,26 @@ def csv_profile_rows(
     for row in reader:
         if profile == "epc":
             postcode = get_ci(row, "POSTCODE")
-            address = compact_urban_locality(joined_parts(get_ci(row, f"ADDRESS{i}") for i in range(1, 4)))
+            address = compact_urban_locality(
+                joined_parts(get_ci(row, f"ADDRESS{i}") for i in range(1, 4))
+            )
         elif profile == "companies-house":
             postcode = get_ci(row, "RegAddress.PostCode", "RegAddress PostCode")
-            address = compact_urban_locality(joined_parts((
-                get_ci(row, "RegAddress.CareOf"), get_ci(row, "RegAddress.POBox"),
-                get_ci(row, "RegAddress.AddressLine1"), get_ci(row, "RegAddress.AddressLine2"),
-            )))
+            address = compact_urban_locality(
+                joined_parts(
+                    (
+                        get_ci(row, "RegAddress.CareOf"),
+                        get_ci(row, "RegAddress.POBox"),
+                        get_ci(row, "RegAddress.AddressLine1"),
+                        get_ci(row, "RegAddress.AddressLine2"),
+                    )
+                )
+            )
         elif profile == "fhrs":
             postcode = get_ci(row, "PostCode", "postcode")
-            address = compact_urban_locality(joined_parts(get_ci(row, f"AddressLine{i}") for i in range(1, 5)))
+            address = compact_urban_locality(
+                joined_parts(get_ci(row, f"AddressLine{i}") for i in range(1, 5))
+            )
         else:
             postcode = get_ci(row, postcode_column)
             address = joined_parts(get_ci(row, c) for c in address_columns)
@@ -1857,9 +2191,13 @@ def xml_profile_rows(
         for _event, elem in ET.iterparse(stream, events=("end",)):
             if elem.tag.rsplit("}", 1)[-1] != "EstablishmentDetail":
                 continue
-            values = {child.tag.rsplit("}", 1)[-1]: squash(child.text) for child in elem}
+            values = {
+                child.tag.rsplit("}", 1)[-1]: squash(child.text) for child in elem
+            }
             postcode = values.get("PostCode", "")
-            address = compact_urban_locality(joined_parts(values.get(f"AddressLine{i}", "") for i in range(1, 5)))
+            address = compact_urban_locality(
+                joined_parts(values.get(f"AddressLine{i}", "") for i in range(1, 5))
+            )
             if postcode and address:
                 yield postcode, address, source_label
             elem.clear()
@@ -1870,14 +2208,28 @@ def xml_profile_rows(
         tag = elem.tag.rsplit("}", 1)[-1]
         if tag not in {"node", "way", "relation"}:
             continue
-        tags = {child.attrib.get("k", ""): child.attrib.get("v", "") for child in elem if child.tag.rsplit("}", 1)[-1] == "tag"}
+        tags = {
+            child.attrib.get("k", ""): child.attrib.get("v", "")
+            for child in elem
+            if child.tag.rsplit("}", 1)[-1] == "tag"
+        }
         postcode = tags.get("addr:postcode", "")
         street = tags.get("addr:street") or tags.get("addr:place", "")
         number = tags.get("addr:housenumber", "")
         name = tags.get("addr:housename", "")
         unit = tags.get("addr:unit", "")
         main = squash(f"{number} {street}") if street else number
-        address = joined_parts((f"Unit {unit}" if unit and not unit.lower().startswith("unit") else unit, name, main))
+        address = joined_parts(
+            (
+                (
+                    f"Unit {unit}"
+                    if unit and not unit.lower().startswith("unit")
+                    else unit
+                ),
+                name,
+                main,
+            )
+        )
         if postcode and address:
             yield postcode, address, source_label
         elem.clear()
@@ -1887,7 +2239,9 @@ def pbf_osm_rows(path: str) -> Iterator[tuple[str, str, str]]:
     try:
         import osmium  # type: ignore
     except ImportError as exc:
-        raise SystemExit("OSM PBF import requires pyosmium: python -m pip install osmium") from exc
+        raise SystemExit(
+            "OSM PBF import requires pyosmium: python -m pip install osmium"
+        ) from exc
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8", newline="") as spool:
         writer = csv.writer(spool, delimiter="\t", lineterminator="\n")
 
@@ -1900,7 +2254,17 @@ def pbf_osm_rows(path: str) -> Iterator[tuple[str, str, str]]:
                 name = tags.get("addr:housename", "")
                 unit = tags.get("addr:unit", "")
                 main = squash(f"{number} {street}") if street else number
-                address = joined_parts((f"Unit {unit}" if unit and not unit.lower().startswith("unit") else unit, name, main))
+                address = joined_parts(
+                    (
+                        (
+                            f"Unit {unit}"
+                            if unit and not unit.lower().startswith("unit")
+                            else unit
+                        ),
+                        name,
+                        main,
+                    )
+                )
                 if postcode and address:
                     writer.writerow((postcode, address))
 
@@ -1925,12 +2289,16 @@ def source_rows(
         try:
             import pyarrow.parquet as pq  # type: ignore
         except ImportError as exc:
-            raise SystemExit("Parquet import requires pyarrow: python -m pip install pyarrow") from exc
+            raise SystemExit(
+                "Parquet import requires pyarrow: python -m pip install pyarrow"
+            ) from exc
         table = pq.read_table(path)
         for row in table.to_pylist():
             if profile == "epc":
                 postcode = get_ci(row, "POSTCODE")
-                address = compact_urban_locality(joined_parts(get_ci(row, f"ADDRESS{i}") for i in range(1, 4)))
+                address = compact_urban_locality(
+                    joined_parts(get_ci(row, f"ADDRESS{i}") for i in range(1, 4))
+                )
             else:
                 postcode = get_ci(row, postcode_column)
                 address = joined_parts(get_ci(row, c) for c in address_columns)
@@ -1942,14 +2310,19 @@ def source_rows(
         if member_suffix in {".xml", ".osm"}:
             yield from xml_profile_rows(stream, profile, source_label)
         else:
-            yield from csv_profile_rows(stream, profile, postcode_column, address_columns, source_label)
+            yield from csv_profile_rows(
+                stream, profile, postcode_column, address_columns, source_label
+            )
 
 
 def build_index(args: argparse.Namespace) -> int:
     db = sqlite3.connect(args.db)
-    source_rank = args.source_rank if args.source_rank is not None else PROFILE_RANKS[args.profile]
-    db.executescript(
-        """
+    source_rank = (
+        args.source_rank
+        if args.source_rank is not None
+        else PROFILE_RANKS[args.profile]
+    )
+    db.executescript("""
         PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS addresses(
             id INTEGER PRIMARY KEY, postcode TEXT NOT NULL, address TEXT NOT NULL,
@@ -1958,13 +2331,16 @@ def build_index(args: argparse.Namespace) -> int:
             UNIQUE(postcode,address)
         );
         CREATE INDEX IF NOT EXISTS addresses_postcode_idx ON addresses(postcode);
-        """
-    )
+        """)
     columns = {row[1] for row in db.execute("PRAGMA table_info(addresses)")}
     if "source_rank" not in columns:
-        db.execute("ALTER TABLE addresses ADD COLUMN source_rank INTEGER NOT NULL DEFAULT 50")
+        db.execute(
+            "ALTER TABLE addresses ADD COLUMN source_rank INTEGER NOT NULL DEFAULT 50"
+        )
     try:
-        db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS address_fts USING fts5(address_norm)")
+        db.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS address_fts USING fts5(address_norm)"
+        )
     except sqlite3.OperationalError:
         pass
     inserted = 0
@@ -1972,34 +2348,63 @@ def build_index(args: argparse.Namespace) -> int:
     with db:
         for source in args.sources:
             if not args.quiet:
-                print(f"importing {source} with profile {args.profile} (source rank {source_rank})", file=sys.stderr)
-            for postcode, address, label in source_rows(source, args.profile, args.postcode_column, args.address_columns):
+                print(
+                    f"importing {source} with profile {args.profile} (source rank {source_rank})",
+                    file=sys.stderr,
+                )
+            for postcode, address, label in source_rows(
+                source, args.profile, args.postcode_column, args.address_columns
+            ):
                 scanned += 1
                 postcode = normalise_postcode(postcode)
                 if not address or not valid_postcode(postcode):
                     continue
                 cursor = db.execute(
                     "INSERT OR IGNORE INTO addresses(postcode,address,address_norm,house_key,source,source_rank) VALUES(?,?,?,?,?,?)",
-                    (postcode, address, ascii_key(address), house_key(address), f"{args.profile}:{label}", source_rank),
+                    (
+                        postcode,
+                        address,
+                        ascii_key(address),
+                        house_key(address),
+                        f"{args.profile}:{label}",
+                        source_rank,
+                    ),
                 )
                 if cursor.rowcount:
                     inserted += 1
                     try:
-                        db.execute("INSERT INTO address_fts(rowid,address_norm) VALUES(?,?)", (cursor.lastrowid, ascii_key(address)))
+                        db.execute(
+                            "INSERT INTO address_fts(rowid,address_norm) VALUES(?,?)",
+                            (cursor.lastrowid, ascii_key(address)),
+                        )
                     except sqlite3.OperationalError:
                         pass
                 else:
                     db.execute(
                         "UPDATE addresses SET source=CASE WHEN source_rank<? THEN ? ELSE source END, "
                         "source_rank=MAX(source_rank,?) WHERE postcode=? AND address=?",
-                        (source_rank, f"{args.profile}:{label}", source_rank, postcode, address),
+                        (
+                            source_rank,
+                            f"{args.profile}:{label}",
+                            source_rank,
+                            postcode,
+                            address,
+                        ),
                     )
                 if not args.quiet and scanned % 100000 == 0:
-                    print(f"  scanned {scanned:,}; inserted {inserted:,}", file=sys.stderr)
+                    print(
+                        f"  scanned {scanned:,}; inserted {inserted:,}", file=sys.stderr
+                    )
     total = db.execute("SELECT COUNT(*) FROM addresses").fetchone()[0]
     if not args.quiet:
-        print(f"indexed {inserted:,} new addresses; {total:,} total in {args.db}", file=sys.stderr)
-        print("Higher-ranked sources win ordering; duplicate address spellings remain available for matching.", file=sys.stderr)
+        print(
+            f"indexed {inserted:,} new addresses; {total:,} total in {args.db}",
+            file=sys.stderr,
+        )
+        print(
+            "Higher-ranked sources win ordering; duplicate address spellings remain available for matching.",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -2022,12 +2427,17 @@ def postcode_source_rows(path: str, profile: str, column: str) -> Iterator[str]:
 
 def build_postcodes(args: argparse.Namespace) -> int:
     db = sqlite3.connect(args.db)
-    db.execute("CREATE TABLE IF NOT EXISTS postcode_reference(postcode TEXT PRIMARY KEY,source TEXT NOT NULL)")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS postcode_reference(postcode TEXT PRIMARY KEY,source TEXT NOT NULL)"
+    )
     inserted = 0
     with db:
         for source in args.sources:
             if not args.quiet:
-                print(f"importing postcode reference {source} with profile {args.profile}", file=sys.stderr)
+                print(
+                    f"importing postcode reference {source} with profile {args.profile}",
+                    file=sys.stderr,
+                )
             for raw in postcode_source_rows(source, args.profile, args.postcode_column):
                 postcode = normalise_postcode(raw)
                 if valid_postcode(postcode):
@@ -2037,8 +2447,14 @@ def build_postcodes(args: argparse.Namespace) -> int:
                     ).rowcount
     total = db.execute("SELECT COUNT(*) FROM postcode_reference").fetchone()[0]
     if not args.quiet:
-        print(f"indexed {inserted:,} new postcodes; {total:,} total in {args.db}", file=sys.stderr)
-        print("This reference validates/corrects postcodes; it cannot supply street addresses by itself.", file=sys.stderr)
+        print(
+            f"indexed {inserted:,} new postcodes; {total:,} total in {args.db}",
+            file=sys.stderr,
+        )
+        print(
+            "This reference validates/corrects postcodes; it cannot supply street addresses by itself.",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -2056,9 +2472,9 @@ def safe_download_name(url: str, headers: object | None = None) -> str:
     """Choose a local filename without trusting path components from a server."""
     name = ""
     if headers is not None:
-        disposition = str(getattr(headers, "get", lambda _k, _d="": "")(
-            "Content-Disposition", ""
-        ))
+        disposition = str(
+            getattr(headers, "get", lambda _k, _d="": "")("Content-Disposition", "")
+        )
         match = re.search(r"filename\*?=(?:UTF-8''|\")?([^\";]+)", disposition, re.I)
         if match:
             name = urllib.parse.unquote(match.group(1)).strip()
@@ -2114,7 +2530,11 @@ def download_file(url: str, destination: Path) -> Path:
                 received += len(block)
                 percent = int(received * 100 / expected) if expected else -1
                 if percent < 0 or percent >= last_report + 5:
-                    detail = f"{percent}%" if percent >= 0 else f"{received / 1048576:.1f} MiB"
+                    detail = (
+                        f"{percent}%"
+                        if percent >= 0
+                        else f"{received / 1048576:.1f} MiB"
+                    )
                     print(f"  Downloaded {detail}")
                     last_report = percent
     part.replace(target)
@@ -2131,7 +2551,9 @@ def latest_companies_house_url() -> str:
         re.I,
     )
     if not links:
-        raise ValueError("the latest Companies House file could not be found on its official page")
+        raise ValueError(
+            "the latest Companies House file could not be found on its official page"
+        )
     return urllib.parse.urljoin(DOWNLOAD_PAGES["companies-house"], links[-1])
 
 
@@ -2177,7 +2599,12 @@ def self_test() -> int:
     assert cleaned[1].last_name == "Example"
     assert normalise_postcode("HR11HH") == "HR1 1HH"
     assert valid_postcode("SW1A 1AA") and not valid_postcode("LL22 7G")
-    assert choose_address("60", [("60 Aragon Way", "HP22 7DJ"), ("62 Aragon Way", "HP22 7DJ")])[0] == "60 Aragon Way"
+    assert (
+        choose_address(
+            "60", [("60 Aragon Way", "HP22 7DJ"), ("62 Aragon Way", "HP22 7DJ")]
+        )[0]
+        == "60 Aragon Way"
+    )
     print("self-test passed", file=sys.stderr)
     return 0
 
@@ -2186,7 +2613,9 @@ def doctor(args: argparse.Namespace) -> int:
     """Explain which capabilities are ready without changing user data."""
     version_ok = sys.version_info >= (3, 10)
     print("AddressMend environment check")
-    print(f"  Python: {sys.version.split()[0]} ({'ready' if version_ok else '3.10+ required'})")
+    print(
+        f"  Python: {sys.version.split()[0]} ({'ready' if version_ok else '3.10+ required'})"
+    )
     print(f"  Platform: {sys.platform}; administrator rights are not required")
     print(f"  SQLite: {sqlite3.sqlite_version} (built into Python)")
 
@@ -2215,8 +2644,12 @@ def doctor(args: argparse.Namespace) -> int:
 
     pyarrow = importlib.util.find_spec("pyarrow") is not None
     osmium = importlib.util.find_spec("osmium") is not None
-    print(f"  Parquet: {'available' if pyarrow else 'optional pyarrow absent; CSV/ZIP works without it'}")
-    print(f"  OSM PBF: {'available' if osmium else 'optional pyosmium absent; use an .osm XML export'}")
+    print(
+        f"  Parquet: {'available' if pyarrow else 'optional pyarrow absent; CSV/ZIP works without it'}"
+    )
+    print(
+        f"  OSM PBF: {'available' if osmium else 'optional pyosmium absent; use an .osm XML export'}"
+    )
 
     if args.db:
         path = Path(args.db)
@@ -2225,7 +2658,12 @@ def doctor(args: argparse.Namespace) -> int:
         else:
             db = sqlite3.connect(path)
             try:
-                names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                names = {
+                    row[0]
+                    for row in db.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
                 address_count = (
                     db.execute("SELECT COUNT(*) FROM addresses").fetchone()[0]
                     if "addresses" in names
@@ -2246,10 +2684,14 @@ def doctor(args: argparse.Namespace) -> int:
                 db.close()
 
     if args.memory:
-        state = "found" if Path(args.memory).exists() else "will be created on first use"
+        state = (
+            "found" if Path(args.memory).exists() else "will be created on first use"
+        )
         print(f"  Correction memory: {state} at {args.memory}")
 
-    print("  Online services: off by default; --doogal and --online-validate are explicit opt-ins")
+    print(
+        "  Online services: off by default; --doogal and --online-validate are explicit opt-ins"
+    )
     print("  Next step: use the desktop menu, or run 'addressmend.py resources'.")
     return 0 if version_ok else 1
 
@@ -2333,7 +2775,9 @@ def friendly_download(results_dir: Path) -> None:
     if choice in {"4", "5", "6"}:
         keys = {"4": "epc", "5": "fhrs", "6": "codepoint"}
         open_download_page(keys[choice])
-        print("Complete any sign-in or licence step in the browser, then use menu option 5")
+        print(
+            "Complete any sign-in or licence step in the browser, then use menu option 5"
+        )
         print("to add the downloaded file. The programme does not bypass those steps.")
         return
     if choice == "7":
@@ -2348,10 +2792,16 @@ def friendly_download(results_dir: Path) -> None:
         print("Finding the newest dated file on the official Companies House page...")
         url = latest_companies_house_url()
     elif choice == "3":
-        print("This ODbL extract is very large. Importing PBF also needs optional pyosmium.")
-        if not friendly_yes_no("Continue with the latest England OpenStreetMap extract?"):
+        print(
+            "This ODbL extract is very large. Importing PBF also needs optional pyosmium."
+        )
+        if not friendly_yes_no(
+            "Continue with the latest England OpenStreetMap extract?"
+        ):
             return
-        url = "https://download.geofabrik.de/europe/united-kingdom/england-latest.osm.pbf"
+        url = (
+            "https://download.geofabrik.de/europe/united-kingdom/england-latest.osm.pbf"
+        )
     else:
         print("That was not a valid choice, so nothing was downloaded.")
         return
@@ -2367,7 +2817,9 @@ def friendly_download(results_dir: Path) -> None:
 def pasted_text() -> str:
     print()
     print("PASTE YOUR ENTRIES NOW")
-    print("Paste the whole table: Ctrl+V on Windows; Ctrl+Shift+V in most Linux terminals.")
+    print(
+        "Paste the whole table: Ctrl+V on Windows; Ctrl+Shift+V in most Linux terminals."
+    )
     print("Right-click and Paste also works in many terminals.")
     print("When the final row is visible, type DONE on a new line and press Enter.")
     print("Nothing is processed until you type DONE.")
@@ -2398,13 +2850,25 @@ def friendly_clean(
 
     print()
     print("STANDARD PROCESSING PROCEDURE")
-    print("The programme will normalise and validate the entries, apply conservative OCR")
-    print("corrections, harmonise addresses with their postcodes and explain every decision.")
+    print(
+        "The programme will normalise and validate the entries, apply conservative OCR"
+    )
+    print(
+        "corrections, harmonise addresses with their postcodes and explain every decision."
+    )
     if online:
-        print("Internet lookups are ON: postcodes go to Doogal/postcodes.io and uncommon")
-        print("email domains go to Google Public DNS. Complete email addresses are not sent.")
-        print("Only an address with no usable postcode may go to OpenStreetMap/Nominatim.")
-        print("Online searches are deliberately made one at a time and may take a while.")
+        print(
+            "Internet lookups are ON: postcodes go to Doogal/postcodes.io and uncommon"
+        )
+        print(
+            "email domains go to Google Public DNS. Complete email addresses are not sent."
+        )
+        print(
+            "Only an address with no usable postcode may go to OpenStreetMap/Nominatim."
+        )
+        print(
+            "Online searches are deliberately made one at a time and may take a while."
+        )
     else:
         print("Internet lookups are OFF: this batch will use local sources only.")
     if database:
@@ -2418,8 +2882,12 @@ def friendly_clean(
     if online and os.environ.get("GETADDRESS_API_KEY"):
         print()
         print("A licensed getAddress.io key is available on this computer.")
-        print("Unlike the free lookup, this service receives the partial address as well as the postcode.")
-        if friendly_yes_no("Use the licensed getAddress.io lookup for unresolved rows?"):
+        print(
+            "Unlike the free lookup, this service receives the partial address as well as the postcode."
+        )
+        if friendly_yes_no(
+            "Use the licensed getAddress.io lookup for unresolved rows?"
+        ):
             getaddress_env = "GETADDRESS_API_KEY"
     args = argparse.Namespace(
         input=source,
@@ -2466,15 +2934,23 @@ def friendly_clean(
         print(f"Review report:   {audit}")
         if clipboard_route:
             print(f"Copied through {clipboard_route}.")
-            print("Open Excel or LibreOffice Calc, select the first cell and press Ctrl+V.")
+            print(
+                "Open Excel or LibreOffice Calc, select the first cell and press Ctrl+V."
+            )
         else:
-            print("Clipboard copying was unavailable; open the cleaned TSV in Excel or Calc.")
+            print(
+                "Clipboard copying was unavailable; open the cleaned TSV in Excel or Calc."
+            )
         if unresolved:
-            print(f"The review report marks {unresolved} item(s) that the programme did not guess.")
+            print(
+                f"The review report marks {unresolved} item(s) that the programme did not guess."
+            )
         else:
             print("No unresolved checks were recorded.")
         if provisional:
-            print(f"It also marks {provisional} provisional correction(s) for you to confirm.")
+            print(
+                f"It also marks {provisional} provisional correction(s) for you to confirm."
+            )
     except (Exception, SystemExit) as exc:
         print()
         print("The batch could not be completed.")
@@ -2494,7 +2970,11 @@ def friendly_paste(results_dir: Path, online: bool = True) -> None:
         print("No entries were pasted, so nothing was changed.")
         return
     handle = tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", suffix=".md", prefix="uk-address-paste-", delete=False
+        mode="w",
+        encoding="utf-8",
+        suffix=".md",
+        prefix="uk-address-paste-",
+        delete=False,
     )
     try:
         handle.write(text)
@@ -2509,7 +2989,9 @@ def friendly_paste(results_dir: Path, online: bool = True) -> None:
 def friendly_build_index(results_dir: Path) -> None:
     print()
     print("ADD AN OFFLINE ADDRESS DATA FILE")
-    print("Drag the downloaded CSV, ZIP, XML or OSM file into this window, then press Enter.")
+    print(
+        "Drag the downloaded CSV, ZIP, XML or OSM file into this window, then press Enter."
+    )
     source = friendly_path("File: ")
     if not source:
         return
@@ -2541,9 +3023,15 @@ def friendly_build_index(results_dir: Path) -> None:
     postcode_column = "postcode"
     address_columns = ["address"]
     if profile == "generic":
-        postcode_column = input("Name of the postcode column [postcode]: ").strip() or "postcode"
-        raw_columns = input("Address column names, separated by commas [address]: ").strip()
-        address_columns = [x.strip() for x in raw_columns.split(",") if x.strip()] or ["address"]
+        postcode_column = (
+            input("Name of the postcode column [postcode]: ").strip() or "postcode"
+        )
+        raw_columns = input(
+            "Address column names, separated by commas [address]: "
+        ).strip()
+        address_columns = [x.strip() for x in raw_columns.split(",") if x.strip()] or [
+            "address"
+        ]
     database = results_dir / "uk_addresses.sqlite"
     print(f"Building the local database at {database}")
     print("Large official downloads can take several minutes; progress appears below.")
@@ -2551,28 +3039,39 @@ def friendly_build_index(results_dir: Path) -> None:
         if postcode_profile:
             build_postcodes(
                 argparse.Namespace(
-                    sources=[str(source)], db=str(database), profile=postcode_profile,
-                    postcode_column=postcode_column, quiet=False,
+                    sources=[str(source)],
+                    db=str(database),
+                    profile=postcode_profile,
+                    postcode_column=postcode_column,
+                    quiet=False,
                 )
             )
         else:
             build_index(
                 argparse.Namespace(
-                    sources=[str(source)], db=str(database), profile=profile,
-                    postcode_column=postcode_column, address_columns=address_columns,
-                    source_rank=None, quiet=False,
+                    sources=[str(source)],
+                    db=str(database),
+                    profile=profile,
+                    postcode_column=postcode_column,
+                    address_columns=address_columns,
+                    source_rank=None,
+                    quiet=False,
                 )
             )
         print("The offline database is ready and will be used automatically next time.")
     except (Exception, SystemExit) as exc:
         print(f"The file could not be imported: {exc}")
-        print("Check that the source type was correct. The existing database was not deleted.")
+        print(
+            "Check that the source type was correct. The existing database was not deleted."
+        )
 
 
 def friendly_learn(results_dir: Path) -> None:
     print()
     print("TEACH APPROVED CORRECTIONS")
-    print("You need the original batch and an approved six-column TSV with the same row order.")
+    print(
+        "You need the original batch and an approved six-column TSV with the same row order."
+    )
     raw = friendly_path("Drag or type the ORIGINAL file here: ")
     if not raw:
         return
@@ -2582,7 +3081,9 @@ def friendly_learn(results_dir: Path) -> None:
     memory = results_dir / "corrections_and_online_cache.sqlite"
     try:
         learn(str(raw), str(approved), str(memory))
-        print("Those approved corrections will be reused automatically for future batches.")
+        print(
+            "Those approved corrections will be reused automatically for future batches."
+        )
     except (Exception, SystemExit) as exc:
         print(f"The corrections could not be learned: {exc}")
 
@@ -2598,8 +3099,12 @@ def friendly_menu() -> int:
         print("=" * 64)
         print(COPYRIGHT)
         print("Licensed under GNU GPL version 3 or later.")
-        print("There is no warranty; you may redistribute this free software under the GPL.")
-        print("This programme cleans six-column contact tables and explains its decisions.")
+        print(
+            "There is no warranty; you may redistribute this free software under the GPL."
+        )
+        print(
+            "This programme cleans six-column contact tables and explains its decisions."
+        )
         print("Your results are saved in:")
         print(f"  {results_dir}")
         print()
@@ -2623,7 +3128,9 @@ def friendly_menu() -> int:
             print("The programme will read the text currently copied to the clipboard.")
             friendly_clean("@clipboard", results_dir, online=online)
         elif choice == "3":
-            print("Drag the file into this window, or type its full path, then press Enter.")
+            print(
+                "Drag the file into this window, or type its full path, then press Enter."
+            )
             source = friendly_path("File: ")
             if source:
                 friendly_clean(str(source), results_dir, online=online)
@@ -2647,9 +3154,13 @@ def friendly_menu() -> int:
         elif choice == "9":
             online = not online
             if online:
-                print("Internet lookups are now ON and the standard procedure will be used.")
+                print(
+                    "Internet lookups are now ON and the standard procedure will be used."
+                )
             else:
-                print("Internet lookups are now OFF; processing will remain on this computer.")
+                print(
+                    "Internet lookups are now OFF; processing will remain on this computer."
+                )
         elif choice in {"q", "quit", "exit"}:
             print("You may now close this window.")
             return 0
@@ -2673,66 +3184,126 @@ def parser() -> argparse.ArgumentParser:
 
     clean = sub.add_parser("clean", help="clean a Markdown/CSV/TSV batch")
     clean.add_argument("input", help="input file, - for stdin, or @clipboard")
-    clean.add_argument("-o", "--output", default="-", help="TSV file, stdout (-), or @clipboard")
+    clean.add_argument(
+        "-o", "--output", default="-", help="TSV file, stdout (-), or @clipboard"
+    )
     clean.add_argument("--audit", help="write change/unresolved audit TSV")
     clean.add_argument("--db", help="offline address-index SQLite database")
     clean.add_argument("--memory", help="learned-corrections SQLite database")
-    clean.add_argument("--online-validate", action="store_true", help="validate postcodes through postcodes.io")
+    clean.add_argument(
+        "--online-validate",
+        action="store_true",
+        help="validate postcodes through postcodes.io",
+    )
     clean.add_argument(
         "--validate-email-domains",
         action="store_true",
         help="check uncommon domains using Google Public DNS (sends domain only)",
     )
     clean.add_argument(
-        "--doogal", action=argparse.BooleanOptionalAction, default=False,
+        "--doogal",
+        action=argparse.BooleanOptionalAction,
+        default=False,
         help="use Doogal known-address lookup for unresolved rows (opt-in network call)",
     )
     clean.add_argument(
-        "--doogal-delay", type=float, default=1.05,
+        "--doogal-delay",
+        type=float,
+        default=1.05,
         help="minimum seconds between Doogal calls; do not reduce for bulk use (default 1.05)",
     )
     clean.add_argument(
-        "--nominatim", action=argparse.BooleanOptionalAction, default=False,
+        "--nominatim",
+        action=argparse.BooleanOptionalAction,
+        default=False,
         help="use OSM/Nominatim to find a missing postcode from an address (opt-in)",
     )
     clean.add_argument(
-        "--nominatim-delay", type=float, default=1.05,
+        "--nominatim-delay",
+        type=float,
+        default=1.05,
         help="minimum seconds between Nominatim calls; values below 1.05 are ignored",
     )
-    clean.add_argument("--getaddress-key-env", metavar="ENV", help="environment variable containing getAddress.io API key")
-    clean.add_argument("--address-threshold", type=float, default=0.84, help="minimum address match score (default 0.84)")
-    clean.add_argument("--auto-name", action=argparse.BooleanOptionalAction, default=True, help="conservative email-supported surname OCR repair")
-    clean.add_argument("--header", action="store_true", help="include a TSV header")
-    clean.add_argument("--explain", action="store_true", help="explain every row and decision on stderr")
-    clean.add_argument("--quiet", action="store_true", help="suppress progress/explanations on stderr")
     clean.add_argument(
-        "--fail-on-unresolved", action="store_true",
+        "--getaddress-key-env",
+        metavar="ENV",
+        help="environment variable containing getAddress.io API key",
+    )
+    clean.add_argument(
+        "--address-threshold",
+        type=float,
+        default=0.84,
+        help="minimum address match score (default 0.84)",
+    )
+    clean.add_argument(
+        "--auto-name",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="conservative email-supported surname OCR repair",
+    )
+    clean.add_argument("--header", action="store_true", help="include a TSV header")
+    clean.add_argument(
+        "--explain",
+        action="store_true",
+        help="explain every row and decision on stderr",
+    )
+    clean.add_argument(
+        "--quiet", action="store_true", help="suppress progress/explanations on stderr"
+    )
+    clean.add_argument(
+        "--fail-on-unresolved",
+        action="store_true",
         help="exit status 2 when unresolved checks or provisional corrections remain",
     )
     clean.set_defaults(func=clean_records)
 
     build = sub.add_parser("build-index", help="build/update an offline address index")
-    build.add_argument("sources", nargs="+", help="CSV/TSV/XML/ZIP/Parquet/OSM address files")
+    build.add_argument(
+        "sources", nargs="+", help="CSV/TSV/XML/ZIP/Parquet/OSM address files"
+    )
     build.add_argument("--db", required=True, help="SQLite index to create/update")
     build.add_argument(
-        "--profile", choices=sorted(PROFILE_RANKS), default="generic",
+        "--profile",
+        choices=sorted(PROFILE_RANKS),
+        default="generic",
         help="input format/source profile (default generic)",
     )
     build.add_argument("--postcode-column", default="postcode")
-    build.add_argument("--address-columns", nargs="+", default=["address"], help="ordered columns joined into the output address")
-    build.add_argument("--source-rank", type=int, help="override source preference rank (higher wins)")
+    build.add_argument(
+        "--address-columns",
+        nargs="+",
+        default=["address"],
+        help="ordered columns joined into the output address",
+    )
+    build.add_argument(
+        "--source-rank", type=int, help="override source preference rank (higher wins)"
+    )
     build.add_argument("--quiet", action="store_true")
     build.set_defaults(func=build_index)
 
-    pc = sub.add_parser("build-postcodes", help="build an offline postcode-validation reference")
-    pc.add_argument("sources", nargs="+", help="Code-Point Open, ONSPD, Doogal or generic CSV/ZIP files")
-    pc.add_argument("--db", required=True, help="same SQLite database used by clean/build-index")
-    pc.add_argument("--profile", choices=("generic", "codepoint", "onspd", "doogal"), default="generic")
+    pc = sub.add_parser(
+        "build-postcodes", help="build an offline postcode-validation reference"
+    )
+    pc.add_argument(
+        "sources",
+        nargs="+",
+        help="Code-Point Open, ONSPD, Doogal or generic CSV/ZIP files",
+    )
+    pc.add_argument(
+        "--db", required=True, help="same SQLite database used by clean/build-index"
+    )
+    pc.add_argument(
+        "--profile",
+        choices=("generic", "codepoint", "onspd", "doogal"),
+        default="generic",
+    )
     pc.add_argument("--postcode-column", default="postcode")
     pc.add_argument("--quiet", action="store_true")
     pc.set_defaults(func=build_postcodes)
 
-    learn_parser = sub.add_parser("learn", help="learn from raw and approved row-aligned batches")
+    learn_parser = sub.add_parser(
+        "learn", help="learn from raw and approved row-aligned batches"
+    )
     learn_parser.add_argument("raw")
     learn_parser.add_argument("approved")
     learn_parser.add_argument("--memory", required=True)
@@ -2741,20 +3312,28 @@ def parser() -> argparse.ArgumentParser:
     test = sub.add_parser("self-test", help="run built-in tests")
     test.set_defaults(func=lambda _a: self_test())
 
-    resources = sub.add_parser("resources", help="explain free/open data sources and their limits")
+    resources = sub.add_parser(
+        "resources", help="explain free/open data sources and their limits"
+    )
     resources.set_defaults(func=lambda _a: (print(RESOURCE_NOTES), 0)[1])
 
-    diagnostics = sub.add_parser("doctor", help="explain environment and available capabilities")
-    diagnostics.add_argument("--db", help="inspect an offline address-index SQLite database")
+    diagnostics = sub.add_parser(
+        "doctor", help="explain environment and available capabilities"
+    )
+    diagnostics.add_argument(
+        "--db", help="inspect an offline address-index SQLite database"
+    )
     diagnostics.add_argument("--memory", help="inspect the correction-memory path")
     diagnostics.set_defaults(func=doctor)
 
     downloader = sub.add_parser(
-        "download", help="download a direct official offline-data URL with progress/resume"
+        "download",
+        help="download a direct official offline-data URL with progress/resume",
     )
     downloader.add_argument("url", help="direct HTTP/HTTPS download address")
     downloader.add_argument(
-        "--destination", default=str(Path.home() / "Downloads" / "AddressMend Data"),
+        "--destination",
+        default=str(Path.home() / "Downloads" / "AddressMend Data"),
         help="folder for the download",
     )
     downloader.set_defaults(func=download_command)
@@ -2770,7 +3349,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             return friendly_menu()
         except (KeyboardInterrupt, EOFError):
-            print("\nThe programme was closed. Your original information was not changed.")
+            print(
+                "\nThe programme was closed. Your original information was not changed."
+            )
             return 0
     args = parser().parse_args(argv)
     try:
