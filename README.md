@@ -15,13 +15,7 @@ The ordinary desktop workflow requires only Python 3.10 or newer. It is built
 primarily for restricted Windows work environments without administrator
 rights, while also supporting GNU/Linux and LibreOffice.
 
-**Current release:** `v1.2.0`
-
-**Licence:** GNU GPL version 3 or later (`GPL-3.0-or-later`)
-
-**Copyright:** Copyright (C) 2026 Connor Baird
-
-## Why use it?
+## Features
 
 - Paste a Markdown table directly into the friendly desktop menu.
 - Read six-column Markdown, TSV and CSV files without installing packages.
