@@ -41,6 +41,6 @@ pp-*.csv
 all-domestic-certificates*.csv
 all-domestic-certificates*.zip
 
-# Built release artefacts are reproducible from scripts/build_release.py.
+# Built release archives and checksums are not source files.
 *.zip
 SHA256SUMS.txt
