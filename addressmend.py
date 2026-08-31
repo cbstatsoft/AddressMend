@@ -10,7 +10,7 @@
 
 The programme uses deterministic rules and can:
 
-* read the six-column Markdown tables pasted into ChatGPT, or CSV/TSV;
+* read six-column Markdown, CSV and TSV input pasted or loaded from a file;
 * remove Markdown ``mailto:`` wrappers and common OCR/escaping artefacts;
 * normalise and syntactically validate UK postcodes and email addresses;
 * optionally verify uncommon email domains through DNS without sending the mailbox;
