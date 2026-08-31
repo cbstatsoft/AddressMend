@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "addressmend"
+version = "1.2.0"
+description = "Deterministic UK contact and partial-address harmoniser with offline indexing"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+authors = [{ name = "Connor Baird" }]
+keywords = ["UK", "address", "postcode", "OCR", "data-cleaning", "SQLite"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/cbstatsoft/addressmend"
+Repository = "https://github.com/cbstatsoft/addressmend.git"
+Issues = "https://github.com/cbstatsoft/addressmend/issues"
+Changelog = "https://github.com/cbstatsoft/addressmend/blob/main/CHANGELOG.md"
+
+[project.scripts]
+addressmend = "addressmend:main"
+
+[tool.setuptools]
+py-modules = ["addressmend"]
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"

@@ -1,0 +1,45 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+.venv/
+venv/
+.agents/
+.codex/
+library_upload_tools/
+outputs/
+upload/
+*.part
+
+# Runtime data may contain personal information and must not be committed.
+UK Address Cleaner Results/
+UK Address Harmoniser Results/
+AddressMend Results/
+Downloaded address data/
+cleaned_entries_*.tsv
+review_report_*.tsv
+real_results_*.tsv
+generated_test_output.tsv
+generated_test_audit.tsv
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.xlsx
+*.inspect.ndjson
+screen_markdown.py
+screen_report.txt
+
+# Locally downloaded address datasets can be very large.
+*.parquet
+*.pbf
+pp-*.csv
+all-domestic-certificates*.csv
+all-domestic-certificates*.zip
+
+# Built release artefacts are reproducible from scripts/build_release.py.
+*.zip
+SHA256SUMS.txt
