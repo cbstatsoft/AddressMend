@@ -5,23 +5,32 @@ setlocal
 title AddressMend
 cd /d "%~dp0"
 
+set "PYTHON_CMD="
 where py >nul 2>nul
 if not errorlevel 1 (
-    py -3 "%~dp0addressmend.py"
-) else (
-    where python >nul 2>nul
-    if errorlevel 1 (
-        echo.
-        echo AddressMend could not find Python.
-        echo Ask your IT support to install or provide Python 3.10 or newer.
-        echo Administrator access is not otherwise required by this programme.
-        echo.
-        pause
-        exit /b 1
-    )
-    python "%~dp0addressmend.py"
+    py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
+    if not errorlevel 1 set "PYTHON_CMD=py -3"
 )
 
+if not defined PYTHON_CMD (
+    where python >nul 2>nul
+    if not errorlevel 1 (
+        python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
+        if not errorlevel 1 set "PYTHON_CMD=python"
+    )
+)
+
+if not defined PYTHON_CMD (
+    echo.
+    echo AddressMend could not find Python 3.10 or newer.
+    echo Ask your IT support to install or provide a suitable Python version.
+    echo Administrator access is not otherwise required by this programme.
+    echo.
+    pause
+    exit /b 1
+)
+
+%PYTHON_CMD% "%~dp0addressmend.py"
 if errorlevel 1 (
     echo.
     echo The programme reported a problem. Read the message above before closing.
