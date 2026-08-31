@@ -1226,8 +1226,10 @@ def choose_address(
     # damage in the following street text. Low-similarity street names still fail.
     ocr_house_score = bool(exact_house and best[0] >= max(0.78, threshold - 0.06))
     number_only = any(HOUSE_RE.fullmatch(squash(variant)) for variant in fragments)
-    accepted = not number_only and (strong_score or ocr_house_score) and (
-        exact_house or best[0] - second >= 0.07
+    accepted = (
+        not number_only
+        and (strong_score or ocr_house_score)
+        and (exact_house or best[0] - second >= 0.07)
     )
     return best[1], normalise_postcode(best[2]), best[0], accepted
 
@@ -1770,9 +1772,11 @@ def basic_clean(raw: Record, row: int, audit: list[Audit], auto_name: bool) -> R
     postcode = (
         postcode_choices[0]
         if len(postcode_choices) == 1
-        else result.postcode
-        if len(postcode_choices) > 1
-        else normalise_postcode(result.postcode)
+        else (
+            result.postcode
+            if len(postcode_choices) > 1
+            else normalise_postcode(result.postcode)
+        )
     )
     postcode_reason = (
         "unique syntactically valid bracket choice"
@@ -1807,7 +1811,7 @@ def basic_clean(raw: Record, row: int, audit: list[Audit], auto_name: bool) -> R
                                 difflib.SequenceMatcher(
                                     None, ascii_key(v).replace(" ", ""), w
                                 ).ratio()
-                            for w in evidence_words
+                                for w in evidence_words
                             ),
                             default=0.0,
                         ),
@@ -2133,7 +2137,9 @@ def apply_address_lookups(
             address_matched = True
 
         if not address_matched:
-            doogal_choice = choose_address(record.address, doogal, args.address_threshold)
+            doogal_choice = choose_address(
+                record.address, doogal, args.address_threshold
+            )
             if doogal_choice and doogal_choice[3]:
                 address, resolved_pc, score, _ = doogal_choice
                 match_reason = address_match_reason(
@@ -2261,8 +2267,7 @@ def apply_address_lookups(
             if not (
                 item.row == row_number
                 and item.field == "postcode"
-                and item.confidence
-                not in {"review", "unresolved", "verified"}
+                and item.confidence not in {"review", "unresolved", "verified"}
             )
         ]
         audit.append(
@@ -3000,7 +3005,9 @@ def self_test() -> int:
     malformed_audit: list[Audit] = []
     malformed_cleaned = basic_clean(malformed_email, 1, malformed_audit, True)
     assert malformed_cleaned.email == malformed_email.email
-    assert any(a.field == "email" and a.confidence == "unresolved" for a in malformed_audit)
+    assert any(
+        a.field == "email" and a.confidence == "unresolved" for a in malformed_audit
+    )
 
     provisional_raw = Record("", "Maureen", "Burrell", "25", "NG12 3HP", "")
     provisional_audit: list[Audit] = []
@@ -3028,36 +3035,50 @@ def self_test() -> int:
         )
     assert provisional_record.address == "25 Mill Lane"
     assert any(
-        a.field == "address"
-        and a.cleaned == "25 Mill Lane"
-        and a.confidence == "0.96"
+        a.field == "address" and a.cleaned == "25 Mill Lane" and a.confidence == "0.96"
         for a in provisional_audit
     )
     neighbour_completion = automatic_incomplete_address(
         "25",
-        [("21 Mill Lane", "NG12 3HP"), ("23 Mill Lane", "NG12 3HP"),
-         ("27 Mill Lane", "NG12 3HP"), ("29 Mill Lane", "NG12 3HP")],
+        [
+            ("21 Mill Lane", "NG12 3HP"),
+            ("23 Mill Lane", "NG12 3HP"),
+            ("27 Mill Lane", "NG12 3HP"),
+            ("29 Mill Lane", "NG12 3HP"),
+        ],
     )
     assert neighbour_completion and neighbour_completion[0] == "25 Mill Lane"
-    assert automatic_incomplete_address(
-        "25", [("21 Mill Lane", "NG12 3HP"), ("23 Mill Lane", "NG12 3HP")]
-    ) is None
-    assert automatic_incomplete_address(
-        "25", [("25 Mill Lane", "NG12 3HP")], threshold=0.98
-    ) is None
+    assert (
+        automatic_incomplete_address(
+            "25", [("21 Mill Lane", "NG12 3HP"), ("23 Mill Lane", "NG12 3HP")]
+        )
+        is None
+    )
+    assert (
+        automatic_incomplete_address(
+            "25", [("25 Mill Lane", "NG12 3HP")], threshold=0.98
+        )
+        is None
+    )
     flat_completion = automatic_incomplete_address(
         "Flat 6",
         [("2 Monks Hall Road", "NN1 4LZ"), ("8 Monks Hall Road", "NN1 4LZ")],
     )
     assert flat_completion and flat_completion[0] == "Flat 6, Monks Hall Road"
-    assert automatic_incomplete_address(
-        "10 Pedock Close", [("10 Paddock Close", "NG12 2BX")]
-    ) is None
+    assert (
+        automatic_incomplete_address(
+            "10 Pedock Close", [("10 Paddock Close", "NG12 2BX")]
+        )
+        is None
+    )
 
-    with patch.object(sys, "platform", "darwin"), patch(
-        "shutil.which",
-        side_effect=lambda command: (
-            f"/usr/bin/{command}" if command in {"pbcopy", "pbpaste"} else None
+    with (
+        patch.object(sys, "platform", "darwin"),
+        patch(
+            "shutil.which",
+            side_effect=lambda command: (
+                f"/usr/bin/{command}" if command in {"pbcopy", "pbpaste"} else None
+            ),
         ),
     ):
         assert clipboard_backend(write=True) == "macOS clipboard through pbcopy"
