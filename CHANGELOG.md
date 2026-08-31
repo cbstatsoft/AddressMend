@@ -3,6 +3,17 @@
 All notable changes to AddressMend are recorded here. The project uses
 semantic versioning.
 
+## 1.3.0 — 31 August 2026
+
+- Added native macOS clipboard integration through the built-in `pbcopy` and
+  `pbpaste` commands.
+- Added a Finder/Terminal `start.command` launcher with common Homebrew and
+  python.org paths available when Finder supplies a restricted environment.
+- Added DTABNK-style `INSTALL` and `UNINSTALL` POSIX scripts for no-admin,
+  user-local installation on macOS and Linux.
+- Added macOS-specific paste guidance, diagnostics coverage, package metadata
+  and full installation/uninstallation documentation.
+
 ## 1.2.1 — 31 August 2026
 
 - Changed the friendly desktop output folder to `Documents/AddressMend` and
