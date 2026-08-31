@@ -3,6 +3,17 @@
 All notable changes to AddressMend are recorded here. The project uses
 semantic versioning.
 
+## 1.2.1 — 31 August 2026
+
+- Changed the friendly desktop output folder to `Documents/AddressMend` and
+  added a safe rename attempt for folders created under former names.
+- Expanded square-bracket OCR choices with two or more alternatives, including
+  `[x/y]` and `[r/t/k]`, with a 128-variant safety limit.
+- Added field-aware resolution for bracketed names, postcodes, addresses and
+  email addresses; ambiguous choices remain unchanged and are marked for review.
+- Updated the README, security information, package version, in-code help and
+  built-in self-test to describe and check the current behaviour.
+
 ## 1.2.0 — 31 August 2026
 
 - Renamed the former UK Address Harmoniser software **AddressMend** and aligned

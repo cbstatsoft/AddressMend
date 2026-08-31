@@ -19,6 +19,8 @@ rights, while also supporting GNU/Linux and LibreOffice.
 - Read six-column Markdown, TSV and CSV files without installing packages.
 - Preserve the original row order and six output columns.
 - Repair postcode spacing, Markdown email wrappers and conservative OCR errors.
+- Resolve bracketed OCR alternatives such as `[x/y]` when field evidence
+  selects one choice.
 - Complete partial addresses from offline data or optional online lookups.
 - Reuse corrections that a person has previously approved.
 - Mark uncertain suggestions for review instead of silently presenting guesses
@@ -30,15 +32,29 @@ The six columns are:
 ```text
 title    first_name    last_name    address    postcode    email
 ```
+
+OCR transcriptions may put alternatives in square brackets, for example `[x/y]`
+or `[r/t/k]`. AddressMend expands these choices with a safety limit, then uses the
+appropriate evidence for the field: email text for names, UK syntax and postcode
+sources for postcodes, postcode-constrained candidates for addresses, and email
+syntax for email addresses. It changes the value only when one choice is uniquely
+supported; otherwise the original bracketed value is retained and marked
+`unresolved` in the review report.
+
 ## What the programme creates
 
-Results are written to `Documents/AddressMend Results`:
+Results are written to `Documents/AddressMend`:
 
 - `cleaned_entries_<date-time>.tsv` — cleaned six-column output;
 - `review_report_<date-time>.tsv` — field-level explanations and review flags;
 - `corrections_and_online_cache.sqlite` — approved corrections and cached
   lookups;
 - `uk_addresses.sqlite` — optional offline address/postcode index.
+
+On first use, AddressMend tries to rename an existing `AddressMend Results`,
+`UK Address Harmoniser Results` or `UK Address Cleaner Results` folder to the new
+`AddressMend` name. If the operating system prevents the rename, the old folder
+is left untouched and the new folder is created safely.
 
 Confidence labels in the review report have specific meanings:
 
@@ -57,7 +73,8 @@ Always inspect `review` and `unresolved` items before relying on the output.
 The cleaner does not contain person-specific or address-specific `if` rules.
 It applies reusable evidence rules:
 
-1. Normalise the supplied postcode and try credible OCR variants.
+1. Expand bracketed alternatives, normalise the supplied postcode and try
+   credible OCR variants.
 2. Check approved correction memory.
 3. Match the premise or fragment within that postcode using the offline index.
 4. Optionally consult Doogal's postcode-constrained known-address list.

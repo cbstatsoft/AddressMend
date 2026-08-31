@@ -2,8 +2,8 @@
 
 ## Supported version
 
-Security and privacy fixes are applied to the latest release of UK Address
-Harmoniser. At present that is version 1.2.x.
+Security and privacy fixes are applied to the latest release of AddressMend.
+At present that is version 1.2.x.
 
 ## Reporting a vulnerability
 
