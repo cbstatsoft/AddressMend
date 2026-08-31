@@ -1,7 +1,5 @@
 # AddressMend
 
-[![Tests](https://github.com/cbstatsoft/addressmend/actions/workflows/tests.yml/badge.svg)](https://github.com/cbstatsoft/addressmend/actions/workflows/tests.yml)
-[![Release 1.2.0](https://img.shields.io/badge/release-1.2.0-2ea44f)](https://github.com/cbstatsoft/addressmend/releases/tag/v1.2.0)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 [![GPL-3.0-or-later](https://img.shields.io/badge/licence-GPL--3.0--or--later-blue)](LICENSE)
 ![Windows and Linux](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-555)
