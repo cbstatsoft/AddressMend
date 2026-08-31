@@ -4,6 +4,7 @@
 [![GPL-3.0-or-later](https://img.shields.io/badge/licence-GPL--3.0--or--later-A42E2B?logo=gnu&logoColor=white)](LICENSE)
 ![Windows](https://img.shields.io/badge/Windows-supported-0078D4?logo=windows11&logoColor=white)
 ![Linux](https://img.shields.io/badge/Linux-supported-FCC624?logo=linux&logoColor=black)
+![macOS](https://img.shields.io/badge/macOS-supported-000000?logo=apple&logoColor=white)
 
 AddressMend is a deterministic, rule-based desktop programme for cleaning
 six-column UK contact tables. It repairs common OCR damage, normalises postcodes
@@ -12,7 +13,7 @@ produces an audit trail explaining every decision.
 
 The ordinary desktop workflow requires only Python 3.10 or newer. It is built
 primarily for restricted Windows work environments without administrator
-rights, while also supporting GNU/Linux and LibreOffice.
+rights, while also supporting macOS, GNU/Linux, Excel, Numbers and LibreOffice.
 
 ## Features
 
@@ -26,7 +27,8 @@ rights, while also supporting GNU/Linux and LibreOffice.
 - Reuse corrections that a person has previously approved.
 - Mark uncertain suggestions for review instead of silently presenting guesses
   as facts.
-- Export plain tab-separated text for Excel and LibreOffice Calc.
+- Use the native Windows, macOS, Wayland or X11 clipboard when available.
+- Export plain tab-separated text for Excel, Numbers and LibreOffice Calc.
 
 The six columns are:
 
@@ -130,6 +132,52 @@ Input files, outputs, downloaded datasets and SQLite databases are ignored by
 Git because they can contain personal data or be very large. Do not add real
 contact data to bug reports, tests or commits.
 
+## Install, launch and uninstall
+
+No administrator rights or third-party Python packages are required. Python
+3.10 or newer must already be available.
+
+### Windows
+
+Download or clone the repository, then double-click `start.cmd`. AddressMend
+runs from that folder and saves its working files under
+`Documents/AddressMend`.
+
+### macOS
+
+In Terminal, enter the downloaded AddressMend folder and run:
+
+```sh
+chmod +x INSTALL UNINSTALL start.command
+./INSTALL
+```
+
+The installer copies the programme into
+`~/Library/Application Support/AddressMend`, creates the terminal command at
+`~/.local/bin/addressmend`, and creates
+`~/Applications/AddressMend.command` for launching from Finder. It uses
+macOS's built-in `pbcopy` and `pbpaste` clipboard tools. If macOS displays a
+security warning for the launcher, right-click it and choose **Open** once.
+
+### Linux
+
+From the downloaded AddressMend folder, run:
+
+```sh
+chmod +x INSTALL UNINSTALL
+./INSTALL
+```
+
+This installs the programme beneath `${XDG_DATA_HOME:-~/.local/share}` and
+creates `~/.local/bin/addressmend`. The existing `start.sh` launcher also
+continues to work directly from the repository.
+
+### Uninstall
+
+Run `./UNINSTALL` from a downloaded repository copy. It removes only the
+installed application and launcher files. Results, downloaded datasets and the
+correction database under `Documents/AddressMend` are deliberately retained.
+
 ## Command-line use
 
 The menu is recommended for ordinary use. The command line is available for
@@ -171,6 +219,9 @@ for every option.
 addressmend.py         standalone application
 start.cmd              Windows desktop launcher
 start.sh               Linux launcher
+start.command          macOS Finder/Terminal launcher
+INSTALL                 user-local macOS/Linux installer
+UNINSTALL               user-local macOS/Linux uninstaller
 ```
 
 The single-file application is intentional: a user in a locked-down work
