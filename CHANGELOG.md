@@ -9,8 +9,8 @@ semantic versioning.
   `pbpaste` commands.
 - Added a Finder/Terminal `start.command` launcher with common Homebrew and
   python.org paths available when Finder supplies a restricted environment.
-- Added DTABNK-style `INSTALL` and `UNINSTALL` POSIX scripts for no-admin,
-  user-local installation on macOS and Linux.
+- Added DTABNK-style `INSTALL` and `UNINSTALL` POSIX scripts: user-local on
+  macOS and system-wide under `/opt/addressmend` on Linux.
 - Added macOS-specific paste guidance, diagnostics coverage, package metadata
   and full installation/uninstallation documentation.
 
