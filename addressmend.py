@@ -355,6 +355,7 @@ def clean_email(value: str) -> tuple[str, str | None]:
         return prepared, "malformed email"
     return _clean_email_candidate(prepared)
 
+
 def email_change_reason(original: str, cleaned: str) -> str:
     """Explain a deterministic email repair without claiming mailbox certainty."""
     raw = html.unescape(squash(original))
@@ -1075,6 +1076,7 @@ def choose_address(
     )
     return best[1], normalise_postcode(best[2]), best[0], accepted
 
+
 def http_json(url: str, timeout: float = 10.0) -> dict:
     request = urllib.request.Request(
         url, headers={"User-Agent": f"AddressMend/{VERSION} (desktop data cleaner)"}
@@ -1322,6 +1324,7 @@ def offline_postcode_correction(raw: str, index: AddressIndex) -> tuple[str, boo
         return found[0], found[0] != normal
     return normal, False
 
+
 def canonical_postcode(
     raw: str, online: bool, memory: sqlite3.Connection | None
 ) -> tuple[str, str | None]:
@@ -1358,6 +1361,7 @@ def canonical_postcode(
                 (normal, canonical, int(time.time())),
             )
     return canonical or normal, None if canonical else "postcode not found"
+
 
 def getaddress_candidates(fragment: str, postcode: str, api_key: str) -> list[dict]:
     term = squash(f"{fragment} {postcode}")
@@ -1449,6 +1453,7 @@ def email_words(email: str) -> list[str]:
     return sorted(
         {word for word in words if len(word) >= 4 and word not in GENERIC_EMAIL_WORDS}
     )
+
 
 def nearest_email_spelling(name: str, email: str) -> tuple[str, float] | None:
     target = ascii_key(name).replace(" ", "")
@@ -2717,6 +2722,7 @@ def self_test() -> int:
     print("self-test passed", file=sys.stderr)
     return 0
 
+
 def doctor(args: argparse.Namespace) -> int:
     """Explain which capabilities are ready without changing user data."""
     version_ok = sys.version_info >= (3, 10)
@@ -2847,6 +2853,7 @@ def friendly_results_directory() -> Path:
                 pass
     result.mkdir(parents=True, exist_ok=True)
     return result
+
 
 def friendly_database(results_dir: Path) -> Path | None:
     candidates = (
