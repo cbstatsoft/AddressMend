@@ -5,7 +5,7 @@
 # This programme is free software: you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the Free
 # Software Foundation, either version 3 of the License, or (at your option) any
-# later version. See LICENSE.txt for the complete licence text.
+# later version. See LICENSE for the complete licence text.
 """Deterministic cleaner for six-column UK contact and address tables.
 
 The programme uses deterministic rules and can:
