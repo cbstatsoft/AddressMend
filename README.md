@@ -1,8 +1,9 @@
 # AddressMend
 
-![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
-[![GPL-3.0-or-later](https://img.shields.io/badge/licence-GPL--3.0--or--later-blue)](LICENSE)
-![Windows and Linux](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-555)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![GPL-3.0-or-later](https://img.shields.io/badge/licence-GPL--3.0--or--later-A42E2B?logo=gnu&logoColor=white)](LICENSE)
+![Windows](https://img.shields.io/badge/Windows-supported-0078D4?logo=windows11&logoColor=white)
+![Linux](https://img.shields.io/badge/Linux-supported-FCC624?logo=linux&logoColor=black)
 
 AddressMend is a deterministic, rule-based desktop programme for cleaning
 six-column UK contact tables. It repairs common OCR damage, normalises postcodes
