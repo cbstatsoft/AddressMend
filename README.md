@@ -134,8 +134,10 @@ contact data to bug reports, tests or commits.
 
 ## Install, launch and uninstall
 
-No administrator rights or third-party Python packages are required. Python
-3.10 or newer must already be available.
+No third-party Python packages are required. Windows runs portably without
+administrator rights, macOS installs for the current user, and the Linux
+installer uses root or `sudo` for a conventional system-wide installation.
+Python 3.10 or newer must already be available.
 
 ### Windows
 
@@ -168,15 +170,17 @@ chmod +x INSTALL UNINSTALL
 ./INSTALL
 ```
 
-This installs the programme beneath `${XDG_DATA_HOME:-~/.local/share}` and
-creates `~/.local/bin/addressmend`. The existing `start.sh` launcher also
-continues to work directly from the repository.
+The installer requests `sudo` when necessary, places the programme in
+`/opt/addressmend`, and creates `/usr/local/bin/addressmend`. If `sudo` is
+not installed, run it through `su` as instructed. The existing `start.sh`
+launcher also continues to work directly from the repository.
 
 ### Uninstall
 
-Run `./UNINSTALL` from a downloaded repository copy. It removes only the
-installed application and launcher files. Results, downloaded datasets and the
-correction database under `Documents/AddressMend` are deliberately retained.
+Run `./UNINSTALL` from a downloaded repository copy. On Linux it requests
+`sudo` when necessary. It removes only the installed application and launcher
+files. Results, downloaded datasets and the correction database under
+`Documents/AddressMend` are deliberately retained.
 
 ## Command-line use
 
