@@ -150,7 +150,7 @@ for every option.
 ## Repository layout
 
 ```text
-addressmend.py                     standalone application
+addressmend.py         standalone application
 start.cmd              Windows desktop launcher
 start.sh               Linux launcher
 ```
