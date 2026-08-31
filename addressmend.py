@@ -21,6 +21,7 @@ The programme uses deterministic rules and can:
 * resolve ``[x/y]`` OCR choices only when field evidence selects one option;
 * make only high-confidence name/email OCR corrections;
 * learn exact corrections from a raw batch plus an approved batch;
+* use native Windows, macOS, Wayland or X11 clipboard tools when available;
 * preserve row order and output six-column, spreadsheet-ready TSV;
 * write an audit TSV describing every change and unresolved issue.
 
@@ -33,6 +34,7 @@ Quick start
 
     # Windows: double-click start.cmd.
     # Linux: run ./start.sh in a terminal.
+    # macOS: double-click start.command, or run ./start.command in Terminal.
     # With no command-line options, this script opens the same friendly menu.
 
     # Windows PowerShell: clean a file into an Excel-friendly TSV
@@ -93,7 +95,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 COPYRIGHT = "Copyright (C) 2026 Connor Baird"
 FIELD_NAMES = ("title", "first_name", "last_name", "address", "postcode", "email")
 UK_POSTCODE_RE = re.compile(
@@ -526,6 +528,10 @@ def clipboard_backend(write: bool = True) -> str:
     """Describe the best clipboard route available on this computer."""
     if os.name == "nt":
         return "Windows clipboard"
+    if sys.platform == "darwin":
+        command = "pbcopy" if write else "pbpaste"
+        if shutil.which(command):
+            return f"macOS clipboard through {command}"
     if os.environ.get("WAYLAND_DISPLAY"):
         command = "wl-copy" if write else "wl-paste"
         if shutil.which(command):
@@ -593,8 +599,19 @@ root.mainloop()
 
 
 def clipboard_get() -> str:
-    """Read text from Windows, Wayland or X11 without extra Python packages."""
+    """Read text from Windows, macOS, Wayland or X11 without Python packages."""
     try:
+        if sys.platform == "darwin" and shutil.which("pbpaste"):
+            result = subprocess.run(
+                ["pbpaste"],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+            )
+            return result.stdout
         if (
             os.name != "nt"
             and os.environ.get("WAYLAND_DISPLAY")
@@ -650,6 +667,16 @@ def clipboard_set(value: str) -> str:
             root.update()
             root.destroy()
             return "Windows clipboard"
+        if sys.platform == "darwin" and shutil.which("pbcopy"):
+            subprocess.run(
+                ["pbcopy"],
+                input=value,
+                check=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+            )
+            return "macOS clipboard through pbcopy"
         if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-copy"):
             subprocess.run(
                 ["wl-copy"],
@@ -2719,6 +2746,16 @@ def self_test() -> int:
         and bracket_address[0] == "5 Stanford Close"
         and bracket_address[3]
     )
+    from unittest.mock import patch
+
+    with patch.object(sys, "platform", "darwin"), patch(
+        "shutil.which",
+        side_effect=lambda command: (
+            f"/usr/bin/{command}" if command in {"pbcopy", "pbpaste"} else None
+        ),
+    ):
+        assert clipboard_backend(write=True) == "macOS clipboard through pbcopy"
+        assert clipboard_backend(write=False) == "macOS clipboard through pbpaste"
     print("self-test passed", file=sys.stderr)
     return 0
 
@@ -2938,7 +2975,8 @@ def pasted_text() -> str:
     print()
     print("PASTE YOUR ENTRIES NOW")
     print(
-        "Paste the whole table: Ctrl+V on Windows; Ctrl+Shift+V in most Linux terminals."
+        "Paste the whole table: Command+V on macOS; Ctrl+V on Windows; "
+        "Ctrl+Shift+V in most Linux terminals."
     )
     print("Right-click and Paste also works in many terminals.")
     print("When the final row is visible, type DONE on a new line and press Enter.")
@@ -3055,7 +3093,8 @@ def friendly_clean(
         if clipboard_route:
             print(f"Copied through {clipboard_route}.")
             print(
-                "Open Excel or LibreOffice Calc, select the first cell and press Ctrl+V."
+                "Open Excel, Numbers or LibreOffice Calc and select the first cell. "
+                "Press Command+V on macOS or Ctrl+V elsewhere."
             )
         else:
             print(
