@@ -14,12 +14,12 @@ The programme uses deterministic rules and can:
 * remove Markdown ``mailto:`` wrappers and common OCR/escaping artefacts;
 * normalise and syntactically validate UK postcodes and email addresses;
 * optionally verify uncommon email domains through DNS without sending the mailbox;
-* complete a partial address from an offline SQLite address index;
+* suggest a partial-address completion from an offline SQLite address index;
 * optionally use getAddress.io for premise-level address lookup;
 * validate/canonicalise postcodes with the free postcodes.io API;
 * optionally recover a missing postcode through a rate-limited Nominatim search;
 * resolve ``[x/y]`` OCR choices only when field evidence selects one option;
-* make only high-confidence name/email OCR corrections;
+* resolve bracketed name alternatives only from delimiter-separated email evidence;
 * learn exact corrections from a raw batch plus an approved batch;
 * use native Windows, macOS, Wayland or X11 clipboard tools when available;
 * preserve row order and output six-column, spreadsheet-ready TSV;
@@ -95,7 +95,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 COPYRIGHT = "Copyright (C) 2026 Connor Baird"
 FIELD_NAMES = ("title", "first_name", "last_name", "address", "postcode", "email")
 UK_POSTCODE_RE = re.compile(
@@ -269,11 +269,20 @@ def record_key(r: Record) -> str:
 
 
 def normalise_postcode(value: str) -> str:
-    compact = re.sub(r"[^A-Z0-9]", "", value.upper())
+    prepared = squash(value).upper()
+    compact = re.sub(r"[^A-Z0-9]", "", prepared)
     if not compact:
         return ""
     if compact == "GIR0AA":
         return "GIR 0AA"
+    # Respect a boundary supplied by the operator. Re-splitting an explicitly
+    # incomplete value such as ``NG13 9A`` as ``NG1 39A`` silently creates a
+    # different, syntactically valid postcode.
+    if re.search(r"\s", prepared):
+        parts = prepared.split()
+        if len(parts) == 2 and all(re.fullmatch(r"[A-Z0-9]+", p) for p in parts):
+            return f"{parts[0]} {parts[1]}"
+        return prepared
     return f"{compact[:-3]} {compact[-3:]}" if len(compact) >= 5 else compact
 
 
@@ -328,14 +337,10 @@ def _clean_email_candidate(value: str) -> tuple[str, str | None]:
         return "", None
     if value.count("@") != 1:
         return value, "malformed email"
-    local, domain = value.rsplit("@", 1)
-    if domain not in COMMON_DOMAINS:
-        near = sorted(
-            ((levenshtein(domain, d), d) for d in COMMON_DOMAINS),
-            key=lambda x: (x[0], x[1]),
-        )
-        if near and near[0][0] == 1 and (len(near) == 1 or near[1][0] > 1):
-            value = f"{local}@{near[0][1]}"
+    # A syntactically valid domain may be uncommon (mail.com, ymail.com or an
+    # organisation's own domain). Edit distance alone is not evidence that it
+    # should be changed to Gmail or another large provider. Online domain
+    # validation flags non-resolving domains later without altering the email.
     return value, None if EMAIL_RE.fullmatch(value) else "malformed email"
 
 
@@ -936,6 +941,16 @@ def house_key(value: str) -> str:
     return ascii_key(match.group(1)) if match else ""
 
 
+def premise_keys(value: str) -> set[str]:
+    """Return leading premise identifiers from every address component."""
+    keys: set[str] = set()
+    for component in squash(value).split(","):
+        key = house_key(component)
+        if key:
+            keys.add(key)
+    return keys
+
+
 SUBPREMISE_RE = re.compile(r"^(?:flat|apartment|room|unit)\s+[A-Z0-9/-]+$", re.I)
 LEADING_PREMISE_RE = re.compile(r"^\s*\d+[A-Z]?(?:[-/]\d+[A-Z]?)?\s+", re.I)
 
@@ -1032,12 +1047,16 @@ def score_address(fragment: str, candidate: str) -> float:
         )
     if c.startswith(f + " ") or f.startswith(c + " "):
         ratio = max(ratio, 0.96)
-    fh, ch = house_key(fragment), house_key(candidate)
-    if fh and ch:
-        if fh == ch:
+    fragment_premises = premise_keys(fragment)
+    candidate_premises = premise_keys(candidate)
+    if fragment_premises and candidate_premises:
+        if fragment_premises & candidate_premises:
             ratio += 0.08
         else:
-            ratio -= 0.35
+            # Never let fuzzy street text override a conflicting supplied
+            # house or flat number, including when a building name precedes
+            # the numbered street component.
+            return 0.0
     f_words = set(f.split())
     c_words = set(c.split())
     if f_words:
@@ -1085,20 +1104,20 @@ def choose_address(
         return None
     best = ranked[0]
     second = ranked[1][0] if len(ranked) > 1 else 0.0
-    fragment_houses = {
-        house_key(variant) for variant in fragments if house_key(variant)
-    }
+    fragment_houses = set().union(*(premise_keys(variant) for variant in fragments))
     exact_house = bool(
         fragment_houses
-        and house_key(best[1]) in fragment_houses
-        and sum(house_key(address) in fragment_houses for address, _ in unique) == 1
+        and bool(premise_keys(best[1]) & fragment_houses)
+        and sum(bool(premise_keys(address) & fragment_houses) for address, _ in unique)
+        == 1
     )
     strong_score = best[0] >= threshold
     # A unique matching house/flat number within the supplied postcode is
     # strong independent evidence, so permit a small score allowance for OCR
     # damage in the following street text. Low-similarity street names still fail.
     ocr_house_score = bool(exact_house and best[0] >= max(0.78, threshold - 0.06))
-    accepted = (strong_score or ocr_house_score) and (
+    number_only = any(HOUSE_RE.fullmatch(squash(variant)) for variant in fragments)
+    accepted = not number_only and (strong_score or ocr_house_score) and (
         exact_house or best[0] - second >= 0.07
     )
     return best[1], normalise_postcode(best[2]), best[0], accepted
@@ -1312,22 +1331,34 @@ OCR_POSTCODE_SWAPS = {
 
 
 def postcode_variants(value: str, limit: int = 40) -> list[str]:
-    compact = re.sub(r"[^A-Z0-9]", "", value.upper())
-    variants = {normalise_postcode(compact)} if compact else set()
+    prepared = squash(value).upper()
+    compact = re.sub(r"[^A-Z0-9]", "", prepared)
+    parts = prepared.split()
+    if len(parts) == 2:
+        if len(parts[1]) != 3:
+            return []
+        boundary = len(parts[0])
+
+        def format_variant(candidate: str) -> str:
+            return f"{candidate[:boundary]} {candidate[boundary:]}"
+
+    else:
+
+        def format_variant(candidate: str) -> str:
+            return normalise_postcode(candidate)
+
+    variants = {format_variant(compact)} if compact else set()
     for i, char in enumerate(compact):
         for replacement in OCR_POSTCODE_SWAPS.get(char, ""):
-            variants.add(
-                normalise_postcode(compact[:i] + replacement + compact[i + 1 :])
-            )
+            variants.add(format_variant(compact[:i] + replacement + compact[i + 1 :]))
             if len(variants) >= limit:
                 break
         if len(variants) >= limit:
             break
-    if len(compact) >= 6:
-        for i in range(len(compact)):
-            variants.add(normalise_postcode(compact[:i] + compact[i + 1 :]))
-            if len(variants) >= limit:
-                break
+    # Do not delete arbitrary characters. A deletion can turn a supplied
+    # postcode into a different real postcode (NN4 -> N4, NW3 -> W3, L16 ->
+    # L1). Length-changing corrections require address corroboration or
+    # approved correction memory.
     return sorted(v for v in variants if valid_postcode(v))
 
 
@@ -1338,6 +1369,8 @@ def offline_postcode_correction(raw: str, index: AddressIndex) -> tuple[str, boo
         return known_choices[0], known_choices[0] != normalise_postcode(raw)
     normal = choices[0] if len(choices) == 1 else normalise_postcode(raw)
     if index.knows_postcode(normal):
+        return normal, False
+    if valid_postcode(raw):
         return normal, False
     variants = {
         candidate
@@ -1374,13 +1407,16 @@ def canonical_postcode(
             "SELECT canonical FROM postcode_cache WHERE query=?", (normal,)
         ).fetchone()
         if cached:
-            return (cached[0] or normal), None if cached[0] else "postcode not found"
+            cached_canonical = normalise_postcode(cached[0] or "")
+            if cached_canonical == normal:
+                return normal, None
+            if not cached[0]:
+                return normal, "postcode not found"
+            # Ignore pre-1.3.1 fuzzy-cache entries that map a query to a
+            # different postcode.
     canonical = postcodes_io_lookup(normal)
-    if not canonical:
-        possible = [v for v in postcode_variants(raw) if v != normal]
-        matches = postcodes_io_bulk(possible)
-        if len(matches) == 1:
-            canonical = matches[0]
+    if canonical != normal:
+        canonical = None
     if memory:
         with memory:
             memory.execute(
@@ -1470,40 +1506,34 @@ def postcode_choice_candidates(value: str) -> list[str]:
 
 
 def email_words(email: str) -> list[str]:
-    words: list[str] = []
-    for variant in bracket_variants(email):
-        words.extend(
-            re.findall(r"[a-z]{4,}", ascii_key(variant).replace(" ", ""))
+    """Return boundary-delimited words from the email local part only."""
+    words: set[str] = set()
+    for variant in bracket_variants(unwrap_email(email)):
+        if variant.count("@") != 1:
+            continue
+        local = variant.rsplit("@", 1)[0]
+        words.update(
+            word
+            for word in ascii_key(local).split()
+            if len(word) >= 2 and word not in GENERIC_EMAIL_WORDS
         )
-        local_domain = re.split(r"[@._+\-\d]+", variant.casefold())
-        words.extend(re.sub(r"[^a-z]", "", word) for word in local_domain)
-    return sorted(
-        {word for word in words if len(word) >= 4 and word not in GENERIC_EMAIL_WORDS}
-    )
+    return sorted(words)
 
 
-def nearest_email_spelling(name: str, email: str) -> tuple[str, float] | None:
-    target = ascii_key(name).replace(" ", "")
-    if len(target) < 5:
-        return None
-    best: tuple[int, float, str] | None = None
-    for word in email_words(email):
-        for length in range(max(4, len(target) - 1), len(target) + 2):
-            for start in range(0, max(1, len(word) - length + 1)):
-                candidate = word[start : start + length]
-                if len(candidate) < 4:
-                    continue
-                distance = levenshtein(target, candidate)
-                ratio = difflib.SequenceMatcher(None, target, candidate).ratio()
-                item = (distance, -ratio, candidate)
-                if best is None or item < best:
-                    best = item
-    if best and best[0] <= 1 and -best[1] >= 0.85 and best[2] != target:
-        replacement = best[2].capitalize()
-        if name.isupper():
-            replacement = replacement.upper()
-        return replacement, -best[1]
-    return None
+def email_identity_words(first_name: str, email: str) -> list[str]:
+    """Return delimited surname evidence when the email identifies this person."""
+    first = ascii_key(first_name).replace(" ", "")
+    if len(first) < 2:
+        return []
+    evidence: set[str] = set()
+    for variant in bracket_variants(unwrap_email(email)):
+        if variant.count("@") != 1:
+            continue
+        local = variant.rsplit("@", 1)[0]
+        tokens = [word for word in ascii_key(local).split() if word]
+        if first in tokens:
+            evidence.update(word for word in tokens if word != first and len(word) >= 4)
+    return sorted(evidence)
 
 
 def load_override(memory: sqlite3.Connection | None, raw: Record) -> Record | None:
@@ -1580,19 +1610,53 @@ def add_change(
         audit.append(Audit(row, field, old, new, confidence, reason))
 
 
+def consolidate_audit(audit: Sequence[Audit]) -> list[Audit]:
+    """Collapse sequential applied edits into one original-to-final event."""
+    result: list[Audit] = []
+    applied: dict[tuple[int, str], int] = {}
+    non_destructive = {"review", "unresolved", "verified"}
+    for event in audit:
+        key = (event.row, event.field)
+        previous_index = applied.get(key)
+        if event.confidence in non_destructive or previous_index is None:
+            result.append(event)
+            if event.confidence not in non_destructive:
+                applied[key] = len(result) - 1
+            continue
+        previous = result[previous_index]
+        if previous.cleaned == event.original:
+            result[previous_index] = Audit(
+                event.row,
+                event.field,
+                previous.original,
+                event.cleaned,
+                event.confidence,
+                f"{previous.reason}; then {event.reason}",
+            )
+        else:
+            result.append(event)
+            applied[key] = len(result) - 1
+    return result
+
+
 def basic_clean(raw: Record, row: int, audit: list[Audit], auto_name: bool) -> Record:
     result = Record(*[squash(v) for v in raw.values()])
     email, email_problem = clean_email(result.email)
-    add_change(
-        audit,
-        row,
-        "email",
-        result.email,
-        email,
-        email_change_confidence(result.email),
-        email_change_reason(result.email, email),
-    )
-    result.email = email
+    if email_problem:
+        audit.append(
+            Audit(row, "email", result.email, email, "unresolved", email_problem)
+        )
+    else:
+        add_change(
+            audit,
+            row,
+            "email",
+            result.email,
+            email,
+            email_change_confidence(result.email),
+            email_change_reason(result.email, email),
+        )
+        result.email = email
     postcode_choices = postcode_choice_candidates(result.postcode)
     postcode = (
         postcode_choices[0]
@@ -1607,14 +1671,25 @@ def basic_clean(raw: Record, row: int, audit: list[Audit], auto_name: bool) -> R
         else "postcode formatting"
     )
     add_change(
-        audit, row, "postcode", result.postcode, postcode, "high", postcode_reason
+        audit,
+        row,
+        "postcode",
+        result.postcode,
+        postcode,
+        "high" if postcode_reason.startswith("unique") else "formatting",
+        postcode_reason,
     )
     result.postcode = postcode
 
     for field in ("first_name", "last_name"):
         value = getattr(result, field)
         variants = bracket_variants(value)
-        if len(variants) > 1:
+        if auto_name and len(variants) > 1:
+            evidence_words = (
+                email_words(result.email)
+                if field == "first_name"
+                else email_identity_words(result.first_name, result.email)
+            )
             scored = sorted(
                 (
                     (
@@ -1623,7 +1698,7 @@ def basic_clean(raw: Record, row: int, audit: list[Audit], auto_name: bool) -> R
                                 difflib.SequenceMatcher(
                                     None, ascii_key(v).replace(" ", ""), w
                                 ).ratio()
-                                for w in email_words(email)
+                            for w in evidence_words
                             ),
                             default=0.0,
                         ),
@@ -1658,24 +1733,6 @@ def basic_clean(raw: Record, row: int, audit: list[Audit], auto_name: bool) -> R
                     )
                 )
 
-    if auto_name and "[" not in result.last_name:
-        spelling = nearest_email_spelling(result.last_name, result.email)
-        if spelling:
-            replacement, score = spelling
-            add_change(
-                audit,
-                row,
-                "last_name",
-                result.last_name,
-                replacement,
-                f"{score:.2f}",
-                "one-edit surname correction supported by email",
-            )
-            result.last_name = replacement
-    if email_problem:
-        audit.append(
-            Audit(row, "email", raw.email, result.email, "unresolved", email_problem)
-        )
     return result
 
 
@@ -1856,8 +1913,8 @@ def apply_address_lookups(
                 "review",
                 "postcode found by OpenStreetMap/Nominatim address search",
             )
-            record.address, record.postcode = found_address, found_postcode
-            postcode, problem = found_postcode, None
+            # Nominatim is a broad text search. Keep its result in the review
+            # report, but do not replace the operator's values automatically.
 
     candidates = index.by_postcode(postcode) if postcode else []
     if not candidates and record.address:
@@ -1882,13 +1939,18 @@ def apply_address_lookups(
         match_reason = address_match_reason(
             record.address, address, source_reason, resolved_pc
         )
+        confidence = (
+            "formatting"
+            if ascii_key(record.address) == ascii_key(address)
+            else "review"
+        )
         add_change(
             audit,
             row_number,
             "address",
             record.address,
             address,
-            f"{score:.2f}",
+            confidence,
             match_reason,
         )
         add_change(
@@ -1897,10 +1959,11 @@ def apply_address_lookups(
             "postcode",
             record.postcode,
             resolved_pc,
-            f"{score:.2f}",
+            confidence,
             source_reason,
         )
-        record.address, record.postcode = address, resolved_pc
+        if confidence == "formatting":
+            record.address, record.postcode = address, resolved_pc
         address_matched = True
     else:
         doogal: list[tuple[str, str]] = []
@@ -1912,13 +1975,18 @@ def apply_address_lookups(
             match_reason = address_match_reason(
                 record.address, address, "Doogal known addresses", resolved_pc
             )
+            confidence = (
+                "formatting"
+                if ascii_key(record.address) == ascii_key(address)
+                else "review"
+            )
             add_change(
                 audit,
                 row_number,
                 "address",
                 record.address,
                 address,
-                f"{score:.2f}",
+                confidence,
                 match_reason,
             )
             add_change(
@@ -1927,10 +1995,11 @@ def apply_address_lookups(
                 "postcode",
                 record.postcode,
                 resolved_pc,
-                "high",
+                confidence,
                 "Doogal postcode API",
             )
-            record.address, record.postcode = address, resolved_pc
+            if confidence == "formatting":
+                record.address, record.postcode = address, resolved_pc
             address_matched = True
         elif doogal:
             base = base_address_consensus(record.address, doogal)
@@ -1943,10 +2012,9 @@ def apply_address_lookups(
                     "address",
                     record.address,
                     address,
-                    "high",
+                    "review",
                     "completed the sole shared base address in Doogal; flat was not supplied",
                 )
-                record.address, record.postcode = address, resolved_pc
                 address_matched = True
             elif suggestion:
                 address, resolved_pc, score = suggestion
@@ -1965,10 +2033,9 @@ def apply_address_lookups(
                     "postcode",
                     record.postcode,
                     resolved_pc,
-                    "verified",
-                    "Doogal postcode API",
+                    "review",
+                    "postcode associated with provisional Doogal address suggestion",
                 )
-                record.address, record.postcode = address, resolved_pc
                 address_matched = True
 
     if api_key and record.postcode and not address_matched:
@@ -1993,13 +2060,18 @@ def apply_address_lookups(
                 match_reason = address_match_reason(
                     record.address, address, "getAddress.io", resolved_pc
                 )
+                confidence = (
+                    "formatting"
+                    if ascii_key(record.address) == ascii_key(address)
+                    else "review"
+                )
                 add_change(
                     audit,
                     row_number,
                     "address",
                     record.address,
                     address,
-                    f"{api_choice[2]:.2f}",
+                    confidence,
                     match_reason,
                 )
                 add_change(
@@ -2008,18 +2080,33 @@ def apply_address_lookups(
                     "postcode",
                     record.postcode,
                     resolved_pc,
-                    "high",
+                    confidence,
                     "getAddress.io",
                 )
-                record.address, record.postcode = address, resolved_pc
+                if confidence == "formatting":
+                    record.address, record.postcode = address, resolved_pc
 
-    if problem and not valid_postcode(record.postcode):
+    if problem:
+        suggestion = record.postcode
+        # Formatting or fuzzy validation must not make an unresolved postcode
+        # look authoritative in the cleaned output.
+        record.postcode = squash(raw.postcode)
+        audit[:] = [
+            item
+            for item in audit
+            if not (
+                item.row == row_number
+                and item.field == "postcode"
+                and item.confidence
+                not in {"review", "unresolved", "verified"}
+            )
+        ]
         audit.append(
             Audit(
                 row_number,
                 "postcode",
                 raw.postcode,
-                record.postcode,
+                suggestion,
                 "unresolved",
                 problem,
             )
@@ -2082,47 +2169,6 @@ def add_record_review_flags(
         )
 
 
-def harmonise_household_surnames(output: Sequence[Record], audit: list[Audit]) -> None:
-    """Repair a one-edit household surname only when that row's email supports it."""
-    groups: dict[tuple[str, str], list[int]] = {}
-    for index, record in enumerate(output):
-        key = (ascii_key(record.address), normalise_postcode(record.postcode))
-        groups.setdefault(key, []).append(index)
-    for indices in groups.values():
-        if len(indices) < 2:
-            continue
-        for current_index in indices:
-            current = output[current_index]
-            for candidate_index in indices:
-                candidate = output[candidate_index].last_name
-                if (
-                    current_index == candidate_index
-                    or not candidate
-                    or candidate == current.last_name
-                ):
-                    continue
-                current_key, candidate_key = ascii_key(current.last_name), ascii_key(
-                    candidate
-                )
-                email_key = ascii_key(current.email).replace(" ", "")
-                if (
-                    levenshtein(current_key, candidate_key) == 1
-                    and candidate_key in email_key
-                ):
-                    old = current.last_name
-                    current.last_name = candidate
-                    add_change(
-                        audit,
-                        current_index + 1,
-                        "last_name",
-                        old,
-                        candidate,
-                        "high",
-                        "same-household spelling supported by email",
-                    )
-                    break
-
-
 def clean_records(args: argparse.Namespace) -> int:
     raw_records = read_records(args.input)
     memory = connect_memory(args.memory)
@@ -2166,8 +2212,7 @@ def clean_records(args: argparse.Namespace) -> int:
         output.append(record)
         explain_row(args, row_number, record, audit[audit_start:])
 
-    harmonise_household_surnames(output, audit)
-
+    audit = consolidate_audit(audit)
     write_records(output, args.output, args.header)
     if args.audit:
         write_audit(audit, args.audit)
@@ -2707,6 +2752,8 @@ def download_command(args: argparse.Namespace) -> int:
 
 
 def self_test() -> int:
+    from unittest.mock import patch
+
     sample = """| Mrs | Casey | Cadozo | 60 | hp227dj | [casey.cardozo@example.org](mailto\\:casey.cardozo@example.org) |
 | --- | --- | --- | --- | --- | --- |
 | Mr | Alex | Exemple | 18 | HP21 7HY | alex.example@example.org |
@@ -2720,16 +2767,48 @@ def self_test() -> int:
     cleaned = [basic_clean(r, i + 1, audit, True) for i, r in enumerate(records)]
     assert cleaned[0].postcode == "HP22 7DJ"
     assert cleaned[0].email == "casey.cardozo@example.org"
-    assert cleaned[0].last_name == "Cardozo"
-    assert cleaned[1].last_name == "Example"
-    assert normalise_postcode("HR11HH") == "HR1 1HH"
-    assert valid_postcode("SW1A 1AA") and not valid_postcode("LL22 7G")
-    assert (
-        choose_address(
-            "60", [("60 Aragon Way", "HP22 7DJ"), ("62 Aragon Way", "HP22 7DJ")]
-        )[0]
-        == "60 Aragon Way"
+    assert cleaned[0].last_name == "Cadozo"
+    assert cleaned[1].last_name == "Exemple"
+    bracket_name = basic_clean(
+        Record(
+            "Mrs",
+            "Casey",
+            "[Cadazo/Cardozo]",
+            "60",
+            "HP22 7DJ",
+            "casey.cardozo@example.org",
+        ),
+        3,
+        [],
+        True,
     )
+    assert bracket_name.last_name == "Cardozo"
+    assert normalise_postcode("HR11HH") == "HR1 1HH"
+    assert normalise_postcode("NG13 9A") == "NG13 9A"
+    assert valid_postcode("SW1A 1AA") and not valid_postcode("LL22 7G")
+    assert not valid_postcode("NG13 9A")
+    assert "N4 3AZ" not in postcode_variants("NN4 3AZ")
+    with patch(__name__ + ".postcodes_io_lookup", return_value="NN4 3AZ"):
+        assert canonical_postcode("NN4 3AZ", True, None) == ("NN4 3AZ", None)
+    assert clean_email("stevemurray@mail.com") == (
+        "stevemurray@mail.com",
+        None,
+    )
+    assert clean_email("elizabeth.manu@ymail.com") == (
+        "elizabeth.manu@ymail.com",
+        None,
+    )
+    assert email_identity_words("Jon", "ruth_jenkins@btinternet.com") == []
+    assert email_identity_words("Carmel", "carmeltbradley@gmail.com") == []
+    house_only = choose_address(
+        "60", [("60 Aragon Way", "HP22 7DJ"), ("62 Aragon Way", "HP22 7DJ")]
+    )
+    assert house_only and house_only[0] == "60 Aragon Way" and not house_only[3]
+    conflicting_premise = choose_address(
+        "36 Victoria Grove",
+        [("Ground Floor Flat, 32 Victoria Grove", "DT6 3AD")],
+    )
+    assert conflicting_premise and not conflicting_premise[3]
     assert bracket_variants("Ris[r/t/k]") == ["Risr", "Rist", "Risk"]
     assert postcode_choice_candidates("CB1 4[L/I]W") == ["CB1 4LW"]
     assert clean_email("name[x/@]@example.org") == ("namex@example.org", None)
@@ -2746,7 +2825,50 @@ def self_test() -> int:
         and bracket_address[0] == "5 Stanford Close"
         and bracket_address[3]
     )
-    from unittest.mock import patch
+    malformed_email = Record(
+        "Mr",
+        "Laurence",
+        "Williams",
+        "1 High Street",
+        "SW1A 1AA",
+        "laurence__williams@outlook.com [sic]",
+    )
+    malformed_audit: list[Audit] = []
+    malformed_cleaned = basic_clean(malformed_email, 1, malformed_audit, True)
+    assert malformed_cleaned.email == malformed_email.email
+    assert any(a.field == "email" and a.confidence == "unresolved" for a in malformed_audit)
+
+    provisional_raw = Record("", "Maureen", "Burrell", "25", "NG12 3HP", "")
+    provisional_audit: list[Audit] = []
+    provisional_record = basic_clean(provisional_raw, 1, provisional_audit, True)
+    provisional_args = argparse.Namespace(
+        online_validate=False,
+        nominatim=False,
+        doogal=True,
+        doogal_delay=0.0,
+        address_threshold=0.84,
+    )
+    with patch(
+        __name__ + ".doogal_candidates",
+        return_value=[("25 Mill Lane", "NG12 3HP")],
+    ):
+        provisional_record = apply_address_lookups(
+            provisional_raw,
+            provisional_record,
+            1,
+            provisional_audit,
+            provisional_args,
+            None,
+            AddressIndex(None),
+            "",
+        )
+    assert provisional_record.address == "25"
+    assert any(
+        a.field == "address"
+        and a.cleaned == "25 Mill Lane"
+        and a.confidence == "review"
+        for a in provisional_audit
+    )
 
     with patch.object(sys, "platform", "darwin"), patch(
         "shutil.which",
@@ -3330,7 +3452,7 @@ def friendly_menu() -> int:
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Clean and complete six-column UK contact/address tables.",
+        description="Clean and review six-column UK contact/address tables.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("Quick start", 1)[1] if "Quick start" in __doc__ else "",
     )
@@ -3398,7 +3520,7 @@ def parser() -> argparse.ArgumentParser:
         "--auto-name",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="conservative email-supported surname OCR repair",
+        help="resolve bracketed name alternatives using delimited email evidence",
     )
     clean.add_argument("--header", action="store_true", help="include a TSV header")
     clean.add_argument(
