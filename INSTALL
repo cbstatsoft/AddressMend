@@ -1,0 +1,124 @@
+#!/bin/sh
+# Copyright (C) 2026 Connor Baird
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Installer for AddressMend on Linux and macOS.
+
+set -eu
+
+SOURCE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+PYTHON_SOURCE="$SOURCE_DIR/addressmend.py"
+
+if [ ! -f "$PYTHON_SOURCE" ]; then
+    printf '%s\n' 'AddressMend could not find addressmend.py beside INSTALL.'
+    exit 1
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' 'Python 3.10 or newer is required.'
+    printf '%s\n' 'Download it from https://www.python.org/downloads/'
+    exit 1
+fi
+
+if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+    printf '%s\n' 'The available python3 is older than Python 3.10.'
+    printf '%s\n' 'Download a current version from https://www.python.org/downloads/'
+    exit 1
+fi
+
+install_optional_files() {
+    destination=$1
+    shift
+    for file in "$@"; do
+        if [ -f "$SOURCE_DIR/$file" ]; then
+            cp "$SOURCE_DIR/$file" "$destination/$file"
+        fi
+    done
+}
+
+case $(uname -s) in
+    Darwin)
+        APP_DIR="$HOME/Library/Application Support/AddressMend"
+        BIN_DIR="$HOME/.local/bin"
+        FINDER_DIR="$HOME/Applications"
+        mkdir -p "$APP_DIR" "$BIN_DIR" "$FINDER_DIR"
+
+        cp "$PYTHON_SOURCE" "$APP_DIR/addressmend.py"
+        chmod 755 "$APP_DIR/addressmend.py"
+        install_optional_files "$APP_DIR" README.md LICENSE start.sh start.command
+        [ ! -f "$APP_DIR/start.sh" ] || chmod 755 "$APP_DIR/start.sh"
+        [ ! -f "$APP_DIR/start.command" ] || chmod 755 "$APP_DIR/start.command"
+
+        cat > "$BIN_DIR/addressmend" <<'WRAPPER'
+#!/bin/sh
+exec python3 "$HOME/Library/Application Support/AddressMend/addressmend.py" "$@"
+WRAPPER
+        chmod 755 "$BIN_DIR/addressmend"
+
+        cat > "$FINDER_DIR/AddressMend.command" <<'FINDER'
+#!/bin/sh
+exec "$HOME/Library/Application Support/AddressMend/start.command"
+FINDER
+        chmod 755 "$FINDER_DIR/AddressMend.command"
+
+        printf '\n%s\n' 'AddressMend was installed without administrator rights.'
+        printf 'Application files: %s\n' "$APP_DIR"
+        printf 'Terminal command:  %s\n' "$BIN_DIR/addressmend"
+        printf 'Finder launcher:   %s\n' "$FINDER_DIR/AddressMend.command"
+        case ":${PATH:-}:" in
+            *":$BIN_DIR:"*) ;;
+            *)
+                printf '\n%s\n' "Add $BIN_DIR to PATH to run 'addressmend' by name."
+                printf '%s\n' 'The Finder launcher already works without this change.'
+                ;;
+        esac
+        ;;
+    Linux)
+        APP_DIR="/opt/addressmend"
+        BIN_LAUNCHER="/usr/local/bin/addressmend"
+
+        run_root() {
+            if [ "$(id -u)" -eq 0 ]; then
+                "$@"
+            elif command -v sudo >/dev/null 2>&1; then
+                sudo "$@"
+            else
+                printf '%s\n' 'Administrator access is required for the Linux installation.' >&2
+                printf '%s\n' "Run su -c './INSTALL' or install sudo, then try again." >&2
+                exit 1
+            fi
+        }
+
+        run_root install -d -m 755 "$APP_DIR" /usr/local/bin
+        run_root install -m 755 "$PYTHON_SOURCE" "$APP_DIR/addressmend.py"
+        for file in README.md LICENSE; do
+            if [ -f "$SOURCE_DIR/$file" ]; then
+                run_root install -m 644 "$SOURCE_DIR/$file" "$APP_DIR/$file"
+            fi
+        done
+        for file in start.sh start.command; do
+            if [ -f "$SOURCE_DIR/$file" ]; then
+                run_root install -m 755 "$SOURCE_DIR/$file" "$APP_DIR/$file"
+            fi
+        done
+
+        wrapper=$(mktemp "${TMPDIR:-/tmp}/addressmend-wrapper.XXXXXX")
+        trap 'rm -f "$wrapper"' EXIT HUP INT TERM
+        cat > "$wrapper" <<'WRAPPER'
+#!/bin/sh
+exec python3 /opt/addressmend/addressmend.py "$@"
+WRAPPER
+        run_root install -m 755 "$wrapper" "$BIN_LAUNCHER"
+        rm -f "$wrapper"
+        trap - EXIT HUP INT TERM
+
+        printf '\n%s\n' 'AddressMend was installed system-wide.'
+        printf 'Application files: %s\n' "$APP_DIR"
+        printf 'Terminal command:  %s\n' "$BIN_LAUNCHER"
+        ;;
+    *)
+        printf '%s\n' 'INSTALL supports macOS and Linux.'
+        printf '%s\n' 'On Windows, use start.cmd.'
+        exit 1
+        ;;
+esac
