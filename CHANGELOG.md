@@ -5,9 +5,10 @@ semantic versioning.
 
 ## 1.3.1 — 31 August 2026
 
-- Made automatic address changes non-destructive: fuzzy, partial,
-  street-consensus, house-number-only and third-party candidates are now review
-  suggestions unless an exact correction was previously approved.
+- Replaced unrestricted fuzzy address rewriting with a two-stage
+  detector/corrector policy: number-only and flat-only input can be completed
+  automatically from an exact bare premise or close same-parity neighbours,
+  while weaker partial, fuzzy and third-party candidates remain review-only.
 - Reject address candidates with a conflicting premise number anywhere in the
   candidate, including flat and building prefixes.
 - Preserve explicit postcode boundaries, remove deletion-based variants and
@@ -18,8 +19,9 @@ semantic versioning.
 - Preserve the supplied field when postcode, email or bracket evidence remains
   unresolved, while retaining the candidate and explanation in the audit.
 - Consolidate sequential applied edits into a single accurate audit event.
-- Added built-in regressions for premise conflicts, postcode truncation,
-  uncommon domains, shared-email surnames and review-only address completions.
+- Added built-in regressions for exact-premise and neighbour-supported address
+  completion, premise conflicts, postcode truncation, uncommon domains,
+  shared-email surnames and review-only fuzzy changes.
 
 ## 1.3.0 — 31 August 2026
 
