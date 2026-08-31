@@ -30,39 +30,6 @@ The six columns are:
 ```text
 title    first_name    last_name    address    postcode    email
 ```
-
-## Quick start
-
-### Windows
-
-1. Download and extract `AddressMend_1.2.0_Desktop.zip` from the release.
-2. Keep the extracted files together.
-3. Double-click `Start_AddressMend.cmd`.
-4. Choose **1 — Paste entries into this window**.
-5. Paste the complete table, type `DONE` on a new line and press Enter.
-6. Select cell A1 in Excel or Calc and press Ctrl+V.
-
-No administrator rights or Python package installation are required. Python
-3.10 or newer must already be available on the computer.
-
-### Linux, i3 and LibreOffice Calc
-
-Open a terminal in the extracted folder and run:
-
-```sh
-chmod +x Start_AddressMend.sh
-./Start_AddressMend.sh
-```
-
-Use Ctrl+Shift+V to paste into most Linux terminals. When cleaning finishes,
-select cell A1 in Calc and press Ctrl+V. The programme keeps an X11 clipboard
-owner alive so the copied data does not disappear when the cleaning operation
-ends. It automatically uses `wl-copy`, `xclip`, `xsel` or a persistent Tk
-fallback according to what is already available.
-
-If clipboard integration is unavailable, open the saved `.tsv` file in Calc
-and select **Separated by: Tab** and **Character set: Unicode (UTF-8)**.
-
 ## What the programme creates
 
 Results are written to `Documents/AddressMend Results`:
