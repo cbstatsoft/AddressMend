@@ -3,7 +3,7 @@
 ## Supported version
 
 Security and privacy fixes are applied to the latest release of AddressMend.
-At present that is version 1.2.x.
+At present that is version 1.3.x.
 
 ## Reporting a vulnerability
 
