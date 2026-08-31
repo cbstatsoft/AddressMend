@@ -2,39 +2,55 @@
 # Copyright (C) 2026 Connor Baird
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# User-local uninstaller for AddressMend on Linux and macOS.
+# Uninstaller for AddressMend on Linux and macOS.
 
 set -eu
 
 case $(uname -s) in
     Darwin)
         APP_DIR="$HOME/Library/Application Support/AddressMend"
+        BIN_LAUNCHER="$HOME/.local/bin/addressmend"
         FINDER_LAUNCHER="$HOME/Applications/AddressMend.command"
+
+        rm -f "$BIN_LAUNCHER" "$FINDER_LAUNCHER"
+        for file in addressmend.py start.sh start.command README.md LICENSE; do
+            rm -f "$APP_DIR/$file"
+        done
+        if ! rmdir "$APP_DIR" 2>/dev/null && [ -d "$APP_DIR" ]; then
+            printf '%s\n' 'The application folder contains unrecognised files and was retained:'
+            printf '  %s\n' "$APP_DIR"
+        fi
         ;;
     Linux)
-        APP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/addressmend"
-        FINDER_LAUNCHER=""
+        APP_DIR="/opt/addressmend"
+        BIN_LAUNCHER="/usr/local/bin/addressmend"
+
+        run_root() {
+            if [ "$(id -u)" -eq 0 ]; then
+                "$@"
+            elif command -v sudo >/dev/null 2>&1; then
+                sudo "$@"
+            else
+                printf '%s\n' 'Administrator access is required for the Linux uninstallation.' >&2
+                printf '%s\n' "Run su -c './UNINSTALL' or install sudo, then try again." >&2
+                exit 1
+            fi
+        }
+
+        run_root rm -f "$BIN_LAUNCHER"
+        for file in addressmend.py start.sh start.command README.md LICENSE; do
+            run_root rm -f "$APP_DIR/$file"
+        done
+        if ! run_root rmdir "$APP_DIR" 2>/dev/null && [ -d "$APP_DIR" ]; then
+            printf '%s\n' 'The application folder contains unrecognised files and was retained:'
+            printf '  %s\n' "$APP_DIR"
+        fi
         ;;
     *)
         printf '%s\n' 'UNINSTALL supports macOS and Linux.'
         exit 1
         ;;
 esac
-
-BIN_LAUNCHER="$HOME/.local/bin/addressmend"
-
-rm -f "$BIN_LAUNCHER"
-if [ -n "$FINDER_LAUNCHER" ]; then
-    rm -f "$FINDER_LAUNCHER"
-fi
-
-for file in addressmend.py start.sh start.command README.md LICENSE; do
-    rm -f "$APP_DIR/$file"
-done
-if ! rmdir "$APP_DIR" 2>/dev/null && [ -d "$APP_DIR" ]; then
-    printf '%s\n' "The application folder contains unrecognised files and was retained:"
-    printf '  %s\n' "$APP_DIR"
-fi
 
 printf '%s\n' 'AddressMend application files and launchers were removed.'
 printf '%s\n' 'Your results, correction memory and downloaded address data were retained in:'
