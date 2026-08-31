@@ -14,7 +14,8 @@ The programme uses deterministic rules and can:
 * remove Markdown ``mailto:`` wrappers and common OCR/escaping artefacts;
 * normalise and syntactically validate UK postcodes and email addresses;
 * optionally verify uncommon email domains through DNS without sending the mailbox;
-* suggest a partial-address completion from an offline SQLite address index;
+* complete strongly corroborated number-only/flat-only addresses and review
+  weaker suggestions;
 * optionally use getAddress.io for premise-level address lookup;
 * validate/canonicalise postcodes with the free postcodes.io API;
 * optionally recover a missing postcode through a rate-limited Nominatim search;
@@ -953,6 +954,7 @@ def premise_keys(value: str) -> set[str]:
 
 SUBPREMISE_RE = re.compile(r"^(?:flat|apartment|room|unit)\s+[A-Z0-9/-]+$", re.I)
 LEADING_PREMISE_RE = re.compile(r"^\s*\d+[A-Z]?(?:[-/]\d+[A-Z]?)?\s+", re.I)
+PLAIN_PREMISE_RE = re.compile(r"^\s*(\d+[A-Z]?)\b", re.I)
 
 
 def strip_subpremise(address: str) -> str:
@@ -969,6 +971,113 @@ def street_component(address: str) -> str:
         if STREET_SUFFIX_RE.search(part):
             return LEADING_PREMISE_RE.sub("", part).strip()
     return ""
+
+
+def unique_exact_premise_completion(
+    fragment: str, candidates: Sequence[tuple[str, str]]
+) -> tuple[str, str] | None:
+    """Return one concise candidate that explicitly contains a bare premise.
+
+    A number-only input is known to be incomplete.  It can be completed when
+    the postcode-constrained source contains exactly one address whose first
+    component starts with that same bare premise number.  Flats and apartments
+    deliberately do not count as a match for a bare house number.
+    """
+    supplied = squash(fragment)
+    if not re.fullmatch(r"\d+[A-Z]?", supplied, re.I):
+        return None
+    matches: dict[tuple[str, str], tuple[str, str]] = {}
+    for candidate, postcode in candidates:
+        first = squash(candidate.split(",", 1)[0])
+        premise = PLAIN_PREMISE_RE.match(first)
+        if not premise or premise.group(1).casefold() != supplied.casefold():
+            continue
+        canonical_postcode = normalise_postcode(postcode)
+        matches[(ascii_key(first), canonical_postcode)] = (first, canonical_postcode)
+    return next(iter(matches.values())) if len(matches) == 1 else None
+
+
+def neighbour_supported_street_completion(
+    fragment: str, candidates: Sequence[tuple[str, str]]
+) -> tuple[str, str, float] | None:
+    """Infer a missing premise only when close same-parity neighbours bracket it."""
+    supplied = squash(fragment)
+    if not supplied.isdigit():
+        return None
+    suggestion = street_consensus_suggestion(supplied, candidates)
+    if not suggestion:
+        return None
+    address, postcode, _ = suggestion
+    street = squash(address[len(supplied) :])
+    street_key = ascii_key(street)
+    if not street_key:
+        return None
+    target = int(supplied)
+    numbers: set[int] = set()
+    for candidate, _ in candidates:
+        premise = PLAIN_PREMISE_RE.match(squash(candidate))
+        if premise and street_key in ascii_key(candidate):
+            digits = re.match(r"\d+", premise.group(1))
+            if digits:
+                numbers.add(int(digits.group()))
+    lower = [
+        number for number in numbers if number < target and number % 2 == target % 2
+    ]
+    upper = [
+        number for number in numbers if number > target and number % 2 == target % 2
+    ]
+    if not lower or not upper:
+        return None
+    if target - max(lower) > 4 or min(upper) - target > 4:
+        return None
+    return address, postcode, 0.97
+
+
+def format_subpremise_completion(fragment: str, suggestion: str) -> str:
+    """Put a comma after an incomplete flat/apartment identifier."""
+    supplied = squash(fragment)
+    candidate = squash(suggestion)
+    if not SUBPREMISE_RE.fullmatch(supplied):
+        return candidate
+    if candidate.casefold().startswith(supplied.casefold()):
+        tail = candidate[len(supplied) :].lstrip(" ,-")
+        if tail:
+            return f"{supplied}, {tail}"
+    return candidate
+
+
+def automatic_incomplete_address(
+    fragment: str,
+    candidates: Sequence[tuple[str, str]],
+    threshold: float = 0.84,
+) -> tuple[str, str, str, str] | None:
+    """Apply the detector/corrector policy for demonstrably incomplete input."""
+    exact = unique_exact_premise_completion(fragment, candidates)
+    if exact and threshold <= 0.96:
+        return (
+            exact[0],
+            exact[1],
+            "0.96",
+            "unique exact bare premise in postcode-constrained address data",
+        )
+    neighbours = neighbour_supported_street_completion(fragment, candidates)
+    if neighbours and threshold <= neighbours[2]:
+        return (
+            neighbours[0],
+            neighbours[1],
+            "0.97",
+            "sole postcode street supported by close same-parity neighbours",
+        )
+    if threshold <= 0.95 and SUBPREMISE_RE.fullmatch(squash(fragment)):
+        suggestion = street_consensus_suggestion(fragment, candidates)
+        if suggestion:
+            return (
+                format_subpremise_completion(fragment, suggestion[0]),
+                suggestion[1],
+                "0.95",
+                "incomplete subpremise completed from the sole postcode street",
+            )
+    return None
 
 
 def base_address_consensus(
@@ -1932,18 +2041,11 @@ def apply_address_lookups(
             candidates = [(global_choice[0], global_choice[1])]
 
     address_matched = False
-    choice = choose_address(record.address, candidates, args.address_threshold)
-    if choice and choice[3]:
-        address, resolved_pc, score, _ = choice
-        source_reason = index.source_for(resolved_pc, address)
-        match_reason = address_match_reason(
-            record.address, address, source_reason, resolved_pc
-        )
-        confidence = (
-            "formatting"
-            if ascii_key(record.address) == ascii_key(address)
-            else "review"
-        )
+    automatic = automatic_incomplete_address(
+        record.address, candidates, args.address_threshold
+    )
+    if automatic:
+        address, resolved_pc, confidence, reason = automatic
         add_change(
             audit,
             row_number,
@@ -1951,7 +2053,7 @@ def apply_address_lookups(
             record.address,
             address,
             confidence,
-            match_reason,
+            f"{reason} in offline address index",
         )
         add_change(
             audit,
@@ -1960,20 +2062,18 @@ def apply_address_lookups(
             record.postcode,
             resolved_pc,
             confidence,
-            source_reason,
+            "postcode from offline address index",
         )
-        if confidence == "formatting":
-            record.address, record.postcode = address, resolved_pc
+        record.address, record.postcode = address, resolved_pc
         address_matched = True
-    else:
-        doogal: list[tuple[str, str]] = []
-        if args.doogal and record.postcode:
-            doogal = doogal_candidates(record.postcode, memory, args.doogal_delay)
-        doogal_choice = choose_address(record.address, doogal, args.address_threshold)
-        if doogal_choice and doogal_choice[3]:
-            address, resolved_pc, score, _ = doogal_choice
+
+    if not address_matched:
+        choice = choose_address(record.address, candidates, args.address_threshold)
+        if choice and choice[3]:
+            address, resolved_pc, score, _ = choice
+            source_reason = index.source_for(resolved_pc, address)
             match_reason = address_match_reason(
-                record.address, address, "Doogal known addresses", resolved_pc
+                record.address, address, source_reason, resolved_pc
             )
             confidence = (
                 "formatting"
@@ -1996,36 +2096,62 @@ def apply_address_lookups(
                 record.postcode,
                 resolved_pc,
                 confidence,
-                "Doogal postcode API",
+                source_reason,
             )
             if confidence == "formatting":
                 record.address, record.postcode = address, resolved_pc
             address_matched = True
-        elif doogal:
-            base = base_address_consensus(record.address, doogal)
-            suggestion = street_consensus_suggestion(record.address, doogal)
-            if base:
-                address, resolved_pc = base
-                add_change(
-                    audit,
-                    row_number,
-                    "address",
-                    record.address,
-                    address,
-                    "review",
-                    "completed the sole shared base address in Doogal; flat was not supplied",
+
+    if not address_matched:
+        doogal: list[tuple[str, str]] = []
+        if args.doogal and record.postcode:
+            doogal = doogal_candidates(record.postcode, memory, args.doogal_delay)
+        automatic = automatic_incomplete_address(
+            record.address, doogal, args.address_threshold
+        )
+        if automatic:
+            address, resolved_pc, confidence, reason = automatic
+            add_change(
+                audit,
+                row_number,
+                "address",
+                record.address,
+                address,
+                confidence,
+                f"{reason} in Doogal known addresses",
+            )
+            add_change(
+                audit,
+                row_number,
+                "postcode",
+                record.postcode,
+                resolved_pc,
+                confidence,
+                "Doogal postcode API",
+            )
+            record.address, record.postcode = address, resolved_pc
+            address_matched = True
+
+        if not address_matched:
+            doogal_choice = choose_address(record.address, doogal, args.address_threshold)
+            if doogal_choice and doogal_choice[3]:
+                address, resolved_pc, score, _ = doogal_choice
+                match_reason = address_match_reason(
+                    record.address, address, "Doogal known addresses", resolved_pc
                 )
-                address_matched = True
-            elif suggestion:
-                address, resolved_pc, score = suggestion
+                confidence = (
+                    "formatting"
+                    if ascii_key(record.address) == ascii_key(address)
+                    else "review"
+                )
                 add_change(
                     audit,
                     row_number,
                     "address",
                     record.address,
                     address,
-                    "review",
-                    "harmonised with the sole Doogal street; the supplied premise was absent from its list",
+                    confidence,
+                    match_reason,
                 )
                 add_change(
                     audit,
@@ -2033,10 +2159,48 @@ def apply_address_lookups(
                     "postcode",
                     record.postcode,
                     resolved_pc,
-                    "review",
-                    "postcode associated with provisional Doogal address suggestion",
+                    confidence,
+                    "Doogal postcode API",
                 )
+                if confidence == "formatting":
+                    record.address, record.postcode = address, resolved_pc
                 address_matched = True
+            elif doogal:
+                base = base_address_consensus(record.address, doogal)
+                suggestion = street_consensus_suggestion(record.address, doogal)
+                if base:
+                    address, resolved_pc = base
+                    add_change(
+                        audit,
+                        row_number,
+                        "address",
+                        record.address,
+                        address,
+                        "review",
+                        "completed the sole shared base address in Doogal; flat was not supplied",
+                    )
+                    address_matched = True
+                elif suggestion:
+                    address, resolved_pc, score = suggestion
+                    add_change(
+                        audit,
+                        row_number,
+                        "address",
+                        record.address,
+                        address,
+                        "review",
+                        "harmonised with the sole Doogal street; the supplied premise was absent from its list",
+                    )
+                    add_change(
+                        audit,
+                        row_number,
+                        "postcode",
+                        record.postcode,
+                        resolved_pc,
+                        "review",
+                        "postcode associated with provisional Doogal address suggestion",
+                    )
+                    address_matched = True
 
     if api_key and record.postcode and not address_matched:
         suggestions = getaddress_candidates(record.address, record.postcode, api_key)
@@ -2862,13 +3026,33 @@ def self_test() -> int:
             AddressIndex(None),
             "",
         )
-    assert provisional_record.address == "25"
+    assert provisional_record.address == "25 Mill Lane"
     assert any(
         a.field == "address"
         and a.cleaned == "25 Mill Lane"
-        and a.confidence == "review"
+        and a.confidence == "0.96"
         for a in provisional_audit
     )
+    neighbour_completion = automatic_incomplete_address(
+        "25",
+        [("21 Mill Lane", "NG12 3HP"), ("23 Mill Lane", "NG12 3HP"),
+         ("27 Mill Lane", "NG12 3HP"), ("29 Mill Lane", "NG12 3HP")],
+    )
+    assert neighbour_completion and neighbour_completion[0] == "25 Mill Lane"
+    assert automatic_incomplete_address(
+        "25", [("21 Mill Lane", "NG12 3HP"), ("23 Mill Lane", "NG12 3HP")]
+    ) is None
+    assert automatic_incomplete_address(
+        "25", [("25 Mill Lane", "NG12 3HP")], threshold=0.98
+    ) is None
+    flat_completion = automatic_incomplete_address(
+        "Flat 6",
+        [("2 Monks Hall Road", "NN1 4LZ"), ("8 Monks Hall Road", "NN1 4LZ")],
+    )
+    assert flat_completion and flat_completion[0] == "Flat 6, Monks Hall Road"
+    assert automatic_incomplete_address(
+        "10 Pedock Close", [("10 Paddock Close", "NG12 2BX")]
+    ) is None
 
     with patch.object(sys, "platform", "darwin"), patch(
         "shutil.which",
