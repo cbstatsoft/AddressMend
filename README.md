@@ -202,6 +202,8 @@ environment can copy and run it without installing this project as a package.
 AddressMend is free software licensed under the GNU General Public
 License version 3 or, at your option, any later version. See
 [LICENSE](LICENSE) for the complete terms.
+
 ---
+
 
 **🄯 Connor Baird, 2026**
