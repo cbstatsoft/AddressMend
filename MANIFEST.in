@@ -1,9 +1,0 @@
-include CHANGELOG.md
-include CONTRIBUTING.md
-include LICENSE.txt
-include README.md
-include READ_ME_FIRST.txt
-include RELEASE_NOTES.md
-include SECURITY.md
-include Start_AddressMend.cmd
-include Start_AddressMend.sh
