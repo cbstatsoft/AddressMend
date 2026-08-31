@@ -23,8 +23,8 @@ rights, while also supporting macOS, GNU/Linux, Excel, Numbers and LibreOffice.
 - Repair postcode spacing, Markdown email wrappers and conservative OCR errors.
 - Resolve bracketed OCR alternatives such as `[x/y]` when field evidence
   selects one choice.
-- Suggest completions for partial addresses from offline data or optional online
-  lookups without overwriting the supplied value.
+- Automatically complete strongly corroborated number-only and flat-only
+  addresses; retain weaker partial or fuzzy candidates for review.
 - Reuse corrections that a person has previously approved.
 - Mark uncertain suggestions for review instead of silently presenting guesses
   as facts.
@@ -64,7 +64,7 @@ Confidence labels in the review report have specific meanings:
 
 | Label | Meaning |
 | --- | --- |
-| `high` or numeric score | Deterministic field evidence met a conservative automatic correction rule. |
+| `high` or numeric score | Deterministic field evidence met a calibrated automatic correction rule. |
 | `learned` | An exact correction previously approved by a person was reused. |
 | `verified` | The supplied value was supported and did not need changing. |
 | `formatting` | Only wrappers, spacing or escaping changed. |
@@ -86,11 +86,19 @@ It applies reusable evidence rules:
 4. Optionally consult Doogal's postcode-constrained known-address list.
 5. Reject every candidate containing a conflicting premise number, including
    numbers in flat or building prefixes.
-6. Record fuzzy, partial, street-consensus and house-number-only completions as
-   `review` suggestions without changing the cleaned TSV.
-7. Apply only equivalent formatting automatically; substantive address changes
-   require approved correction memory.
+6. Treat a number-only or flat-only address as detected incomplete input. Apply
+   a completion only when the postcode-constrained data contains one exact bare
+   premise, or when close same-parity neighbours bracket the missing premise on
+   the sole street.
+7. Record fuzzy changes to already-complete text, uncorroborated street guesses
+   and broad third-party matches as `review` suggestions without changing the
+   cleaned TSV.
 8. Retain the supplied value when evidence conflicts or remains incomplete.
+
+This detector-then-corrector split prevents a plausible lookup from rewriting a
+field that was not demonstrably incomplete. Numeric confidence labels for the
+automatic incomplete-address rules are calibrated against the maintained
+regression batch; `--address-threshold` can raise the required level.
 
 Approved batch-specific corrections live in the local SQLite memory, not in
 the public source code.
