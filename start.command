@@ -10,7 +10,9 @@ PATH="/opt/homebrew/bin:/usr/local/bin:/Library/Frameworks/Python.framework/Vers
 export PATH
 
 status=0
-if command -v python3 >/dev/null 2>&1; then
+if command -v python3 >/dev/null 2>&1 &&
+   python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'
+then
     python3 addressmend.py || status=$?
 else
     printf '%s\n' 'AddressMend could not find Python 3.10 or newer.'
