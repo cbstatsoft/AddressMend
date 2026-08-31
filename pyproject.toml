@@ -30,7 +30,7 @@ dependencies = []
 Homepage = "https://github.com/cbstatsoft/addressmend"
 Repository = "https://github.com/cbstatsoft/addressmend.git"
 Issues = "https://github.com/cbstatsoft/addressmend/issues"
-Changelog = "https://github.com/cbstatsoft/addressmend/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/cbstatsoft/addressmend/blob/master/CHANGELOG.md"
 
 [project.scripts]
 addressmend = "addressmend:main"
