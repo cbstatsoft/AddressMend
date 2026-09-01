@@ -285,11 +285,6 @@ Download or clone the repository, then double-click `start.cmd`. AddressMend
 runs from that folder and saves its working files under
 `Documents/AddressMend`.
 
-Double-click `add-python-terminal-profile.bat` to add a permanent **Python**
-profile to Windows Terminal's new-tab menu without changing `settings.json`.
-Close every Terminal window and reopen it afterwards. Run
-`add-python-terminal-profile.bat /remove` to remove only that profile.
-
 ### macOS
 
 In Terminal, enter the downloaded AddressMend folder and run:
@@ -365,13 +360,12 @@ for every option.
 ## Repository layout
 
 ```text
-addressmend.py         standalone application
-add-python-terminal-profile.bat  optional Windows Terminal Python profile installer
-start.cmd              Windows desktop launcher
-start.sh               Linux launcher
-start.command          macOS Finder/Terminal launcher
-INSTALL                 macOS user/Linux system installer
-UNINSTALL               macOS user/Linux system uninstaller
+addressmend.py  standalone application
+start.cmd       Windows desktop launcher
+start.sh        Linux launcher
+start.command   macOS Finder/Terminal launcher
+INSTALL         macOS user/Linux system installer
+UNINSTALL       macOS user/Linux system uninstaller
 ```
 
 The single-file application is intentional: a user in a locked-down work
