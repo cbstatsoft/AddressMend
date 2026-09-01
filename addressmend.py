@@ -4759,6 +4759,9 @@ def self_test() -> int:
         writer.write(log_line + "\n")
         writer.write(log_line + "\n")
     assert wrapped_log.getvalue() == narrow_log + "\n" + wide_log + "\n"
+    control_log = io.StringIO()
+    WindowAwareTextWriter(control_log).write_control("\x1b[1;23r")
+    assert control_log.getvalue() == "\x1b[1;23r"
     with patch(
         __name__ + ".shutil.get_terminal_size",
         return_value=os.terminal_size((42, 20)),
@@ -4786,13 +4789,25 @@ def self_test() -> int:
     assert transient_log.getvalue().endswith("\n")
 
     pinned_log = TTYLog()
-    with ProgressBar("Cleaning", 2, True, True, pinned_log) as progress:
-        assert progress.pinned
-        progress.clear()
-        print("row 1 explanation", file=pinned_log)
-        progress.update(1, force=True)
+    with (
+        patch(
+            __name__ + ".terminal_scroll_region_supported", return_value=True
+        ),
+        patch(
+            __name__ + ".shutil.get_terminal_size",
+            return_value=os.terminal_size((42, 12)),
+        ),
+    ):
+        with ProgressBar("Cleaning", 2, True, True, pinned_log) as progress:
+            assert progress.pinned
+            progress.clear()
+            print("row 1 explanation", file=pinned_log)
+            progress.update(1, force=True)
     pinned_output = pinned_log.getvalue()
-    assert "row 1 explanation\n\rCleaning" in pinned_output
+    assert "\x1b[1;11r\x1b[11;1H" in pinned_output
+    assert "\x1b[12;1H\x1b[2KCleaning" in pinned_output
+    assert "row 1 explanation\n" in pinned_output
+    assert "\x1b[r" in pinned_output
     assert pinned_output.endswith("\n")
 
     sample = """| Mrs | Casey | Cadozo | 60 | hp227dj | [casey.cardozo@example.org](mailto\\:casey.cardozo@example.org) |
@@ -5781,6 +5796,12 @@ class WindowAwareTextWriter:
             self.pending = ""
         self.target.flush()
 
+    def write_control(self, value: str) -> None:
+        """Write terminal control bytes without wrapping or buffering them."""
+        self.flush()
+        self.target.write(value)
+        self.target.flush()
+
     def isatty(self) -> bool:
         method = getattr(self.target, "isatty", None)
         return bool(method and method())
@@ -5817,6 +5838,33 @@ def progress_bar_line(
     return f"{prefix}[{'#' * complete}{'-' * (bar_width - complete)}]{suffix}"
 
 
+def terminal_scroll_region_supported(stream: TextIO) -> bool:
+    """Enable/check ANSI scrolling regions for a real interactive terminal."""
+    method = getattr(stream, "isatty", None)
+    if not method or not method():
+        return False
+    if os.environ.get("TERM", "").casefold() == "dumb":
+        return False
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        enabled = False
+        for standard_handle in (-11, -12):  # stdout and stderr
+            handle = kernel32.GetStdHandle(standard_handle)
+            mode = ctypes.c_uint()
+            if handle and kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                if kernel32.SetConsoleMode(handle, mode.value | 0x0004):
+                    enabled = True
+        return enabled
+    except Exception:
+        # Capability detection must never stop an address-cleaning job; the
+        # progress reporter will fall back to ordinary milestone lines.
+        return False
+
+
 class ProgressBar:
     """Report live progress without making verbose job logs unreadable."""
 
@@ -5832,20 +5880,71 @@ class ProgressBar:
         self.total = max(0, total)
         self.enabled = enabled
         self.stream = stream or sys.stderr
-        # A real terminal keeps one live bar as its final line even when verbose
-        # row explanations are enabled. Redirected logs retain milestone lines.
-        self.transient = bool(self.stream.isatty())
-        self.pinned = bool(verbose and self.transient)
+        tty = bool(self.stream.isatty())
+        self.pinned = bool(verbose and terminal_scroll_region_supported(self.stream))
+        # Quiet terminals retain the simple carriage-return bar. Verbose terminals
+        # use it only when a genuine bottom-row scrolling region is available.
+        self.transient = bool(tty and (not verbose or self.pinned))
         self.last_bucket = -1
         self.last_emit = 0.0
         self.previous_length = 0
         self.last_current = -1
         self.finished = False
         self.visible = False
+        self.screen_rows = 0
 
     def __enter__(self) -> ProgressBar:
+        if self.enabled and self.pinned:
+            self._activate_scroll_region()
         self.update(0, force=True)
         return self
+
+    def _terminal_rows(self) -> int:
+        return max(4, shutil.get_terminal_size(fallback=(100, 24)).lines)
+
+    def _control(self, value: str) -> None:
+        writer = getattr(self.stream, "write_control", None)
+        if writer:
+            writer(value)
+        else:
+            self.stream.write(value)
+            self.stream.flush()
+
+    def _activate_scroll_region(self) -> None:
+        """Reserve the terminal's bottom row and leave the log cursor above it."""
+        rows = self._terminal_rows()
+        self.screen_rows = rows
+        self._control(f"\x1b[1;{rows - 1}r\x1b[{rows - 1};1H")
+
+    def _sync_scroll_region(self) -> None:
+        rows = self._terminal_rows()
+        if rows == self.screen_rows:
+            return
+        self.screen_rows = rows
+        # Save the log cursor while the resized scrolling region is installed.
+        self._control(f"\x1b7\x1b[1;{rows - 1}r\x1b8")
+
+    def _draw_pinned(self, line: str) -> None:
+        self._sync_scroll_region()
+        self._control(f"\x1b7\x1b[{self.screen_rows};1H\x1b[2K{line}\x1b8")
+        self.previous_length = len(line)
+        self.visible = True
+
+    def _release_scroll_region(self, keep_final: bool) -> None:
+        if not self.pinned or not self.screen_rows:
+            return
+        final_line = progress_bar_line(self.label, self.last_current, self.total)
+        # Clear the reserved row, restore full-screen scrolling without losing
+        # the log cursor, then optionally retain the completed bar as normal text.
+        self._control(
+            f"\x1b7\x1b[{self.screen_rows};1H\x1b[2K\x1b8"
+            "\x1b7\x1b[r\x1b8"
+        )
+        if keep_final:
+            self.stream.write(final_line + "\n")
+        self.stream.flush()
+        self.visible = False
+        self.screen_rows = 0
 
     def update(self, current: int, force: bool = False) -> None:
         if not self.enabled or self.finished:
@@ -5861,7 +5960,10 @@ class ProgressBar:
             elif bucket == self.last_bucket and now - self.last_emit < 10.0:
                 return
         line = progress_bar_line(self.label, current, self.total)
-        if self.transient:
+        if self.pinned:
+            self._draw_pinned(line)
+            self.last_bucket = percent
+        elif self.transient:
             padding = " " * max(0, self.previous_length - len(line))
             self.stream.write("\r" + line + padding)
             self.stream.flush()
@@ -5876,6 +5978,9 @@ class ProgressBar:
 
     def clear(self) -> None:
         """Temporarily erase a live bar so job output can be written above it."""
+        if self.pinned:
+            # The reserved bottom row is outside the log's scrolling region.
+            return
         if not self.enabled or not self.transient or not self.visible:
             return
         self.stream.write("\r" + (" " * self.previous_length) + "\r")
@@ -5887,7 +5992,9 @@ class ProgressBar:
             return
         if self.last_current != self.total:
             self.update(self.total, force=True)
-        if self.transient:
+        if self.pinned:
+            self._release_scroll_region(keep_final=True)
+        elif self.transient:
             self.stream.write("\n")
             self.stream.flush()
             self.visible = False
@@ -5895,7 +6002,9 @@ class ProgressBar:
 
     def close(self) -> None:
         if self.enabled and self.transient and not self.finished:
-            if self.visible:
+            if self.pinned:
+                self._release_scroll_region(keep_final=False)
+            elif self.visible:
                 self.stream.write("\n")
                 self.stream.flush()
             self.visible = False
