@@ -178,10 +178,12 @@ display; TSV files, audit files, redirected command output and clipboard data
 are not reformatted.
 
 Desktop batches show progress automatically. In an interactive terminal, the
-current bar is pinned as the final console line: AddressMend erases it before a
-row explanation, writes the explanation above, and immediately redraws the bar
-at the bottom. It adapts to window resizing and is pinned separately during
-deterministic cleaning and optional LLM review. CLI progress is opt-in with
+current bar occupies a reserved final console row. Terminal scrolling is limited
+to the rows above it, so explanations cannot push the bar upwards like ordinary
+text. AddressMend updates the reserved row after a resize and releases it when
+the job finishes or fails. Windows 10/11 virtual-terminal processing is enabled
+for this display when the console supports it. Deterministic cleaning and
+optional LLM review use the row separately. CLI progress is opt-in with
 `--progress`; when standard error is redirected, 5% milestone bars are written
 as ordinary log lines instead of terminal-control updates.
 
