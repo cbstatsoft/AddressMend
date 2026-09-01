@@ -218,13 +218,15 @@ search or independently verify an address. The output is constrained to the six
 known fields, checked locally and included in the audit. The cleaner accepts
 three provider modes:
 
-Desktop users can select menu option **10** to configure one of these providers
-without putting an API key in the programme; keys must already be present in an
-environment variable.
+Desktop users can select menu option **10** to configure a provider. On Windows,
+the OpenAI option can accept the key through a hidden prompt and persist
+`OPENAI_API_KEY` for the current user through PowerShell `setx`. AddressMend also
+loads it into the current process, so no restart is needed. On other platforms,
+set the environment variable before starting the programme.
 
 | Provider | API used | Defaults |
 | --- | --- | --- |
-| `openai` | OpenAI Responses API with strict Structured Outputs and `store: false` | `https://api.openai.com/v1`, `gpt-5.6-luna`, key in `OPENAI_API_KEY` |
+| `openai` | OpenAI Responses API with strict Structured Outputs and `store: false` | `https://api.openai.com/v1`, `gpt-5.6-terra`, key in `OPENAI_API_KEY` |
 | `compatible` | OpenAI-compatible `/chat/completions` with JSON output | Base URL and model required; optional key in `LLM_API_KEY` |
 | `ollama` | Native Ollama `/api/chat` with a JSON schema | `http://localhost:11434`; model required; no key |
 
@@ -254,6 +256,13 @@ repeat cost; the cached proposal can itself contain personal data. Local Ollama
 keeps the request on the computer only when its base URL is loopback. Any other
 endpoint sends the full unresolved record to that provider, so check its terms,
 retention and data-location policy first.
+
+On Windows, a key entered through menu option 10 is stored in the current user's
+Windows environment, just as if `setx OPENAI_API_KEY` had been run manually. It
+is not written to AddressMend's files, but it remains retrievable by programmes
+running under that Windows account. Entry is hidden and passed to PowerShell
+through standard input, rather than being placed in the AddressMend command line
+or shell history.
 
 The API has no access to this project's previous ChatGPT conversations or
 ChatGPT memory. Reuse approved results through AddressMend's explicit `learn`
@@ -351,12 +360,12 @@ for every option.
 ## Repository layout
 
 ```text
-addressmend.py         standalone application
-start.cmd              Windows desktop launcher
-start.sh               Linux launcher
-start.command          macOS Finder/Terminal launcher
-INSTALL                 macOS user/Linux system installer
-UNINSTALL               macOS user/Linux system uninstaller
+addressmend.py  standalone application
+start.cmd       Windows desktop launcher
+start.sh        Linux launcher
+start.command   macOS Finder/Terminal launcher
+INSTALL         macOS user/Linux system installer
+UNINSTALL       macOS user/Linux system uninstaller
 ```
 
 The single-file application is intentional: a user in a locked-down work

@@ -79,6 +79,7 @@ from __future__ import annotations
 import argparse
 import csv
 import difflib
+import getpass
 import hashlib
 import html
 import importlib.util
@@ -2432,7 +2433,7 @@ def llm_config(args: argparse.Namespace) -> LLMConfig | None:
     if not provider:
         return None
     defaults = {
-        "openai": ("gpt-5.6-luna", "https://api.openai.com/v1", "OPENAI_API_KEY"),
+        "openai": ("gpt-5.6-terra", "https://api.openai.com/v1", "OPENAI_API_KEY"),
         "ollama": ("", "http://localhost:11434", ""),
         "compatible": ("", "", "LLM_API_KEY"),
     }
@@ -3675,6 +3676,25 @@ def self_test() -> int:
     else:
         raise AssertionError("remote cleartext LLM URL was accepted")
 
+    previous_openai_key = os.environ.pop("OPENAI_API_KEY", None)
+    try:
+        fake_process = subprocess.CompletedProcess([], 0, "", "")
+        with (
+            patch.object(os, "name", "nt"),
+            patch("shutil.which", return_value=r"C:\Windows\System32\powershell.exe"),
+            patch("subprocess.run", return_value=fake_process) as run_process,
+        ):
+            persist_windows_openai_key("sk-test-secret")
+        command = run_process.call_args.args[0]
+        assert "sk-test-secret" not in repr(command)
+        assert run_process.call_args.kwargs["input"] == "sk-test-secret"
+        assert os.environ["OPENAI_API_KEY"] == "sk-test-secret"
+    finally:
+        if previous_openai_key is None:
+            os.environ.pop("OPENAI_API_KEY", None)
+        else:
+            os.environ["OPENAI_API_KEY"] = previous_openai_key
+
     with (
         patch.object(sys, "platform", "darwin"),
         patch(
@@ -4194,6 +4214,68 @@ def friendly_learn(results_dir: Path) -> None:
         print(f"The corrections could not be learned: {exc}")
 
 
+def persist_windows_openai_key(value: str) -> None:
+    """Persist OPENAI_API_KEY for the Windows user through PowerShell/setx."""
+    if os.name != "nt":
+        raise RuntimeError("automatic API-key storage is available only on Windows")
+    value = value.strip()
+    if not value or len(value) > 2048 or any(c in value for c in "\r\n\0"):
+        raise RuntimeError("the API key was empty or contained invalid characters")
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
+    if not powershell:
+        raise RuntimeError("PowerShell was not found")
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "$key=[Console]::In.ReadToEnd();"
+        "if([string]::IsNullOrWhiteSpace($key)){exit 2};"
+        "& setx.exe OPENAI_API_KEY $key *> $null;"
+        "exit $LASTEXITCODE"
+    )
+    try:
+        completed = subprocess.run(
+            [
+                powershell,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ],
+            input=value,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("PowerShell could not save the API key") from exc
+    if completed.returncode != 0:
+        raise RuntimeError("PowerShell/setx could not save the API key")
+    # setx affects future processes. Also update this process so the user can
+    # continue immediately without restarting AddressMend.
+    os.environ["OPENAI_API_KEY"] = value
+
+
+def friendly_enter_openai_key() -> bool:
+    """Prompt without echoing and save the key for the current Windows user."""
+    if os.name != "nt":
+        print("Automatic key entry is currently available only on Windows.")
+        return False
+    try:
+        value = getpass.getpass("Paste the OpenAI API key (input hidden): ")
+    except (EOFError, KeyboardInterrupt):
+        print("No key was saved.")
+        return False
+    try:
+        persist_windows_openai_key(value)
+    except RuntimeError as exc:
+        print(f"The key could not be saved: {exc}")
+        return False
+    print("The key was saved for your Windows account and is ready to use now.")
+    return True
+
+
 def friendly_llm_configuration() -> dict[str, object] | None:
     print()
     print("OPTIONAL LLM FALLBACK")
@@ -4210,10 +4292,21 @@ def friendly_llm_configuration() -> dict[str, object] | None:
     if choice in {"", "0"}:
         return None
     if choice == "1":
-        if not os.environ.get("OPENAI_API_KEY"):
-            print("OPENAI_API_KEY is not set. Set it before enabling this option.")
+        existing_key = bool(os.environ.get("OPENAI_API_KEY"))
+        if existing_key and os.name == "nt":
+            if friendly_yes_no("Replace the stored OpenAI API key?"):
+                if not friendly_enter_openai_key():
+                    print("The existing key was not changed and remains available.")
+                existing_key = bool(os.environ.get("OPENAI_API_KEY"))
+        elif not existing_key:
+            if not friendly_yes_no("Enter and save an OpenAI API key now?"):
+                print("LLM fallback remains off.")
+                return None
+            existing_key = friendly_enter_openai_key()
+        if not existing_key:
+            print("OPENAI_API_KEY is not available; LLM fallback remains off.")
             return None
-        model = input("Model [gpt-5.6-luna]: ").strip() or "gpt-5.6-luna"
+        model = input("Model [gpt-5.6-terra]: ").strip() or "gpt-5.6-terra"
         return {
             "llm_provider": "openai",
             "llm_model": model,
@@ -4405,7 +4498,7 @@ def parser() -> argparse.ArgumentParser:
     )
     clean.add_argument(
         "--llm-model",
-        help="LLM model name (OpenAI default: gpt-5.6-luna)",
+        help="LLM model name (OpenAI default: gpt-5.6-terra)",
     )
     clean.add_argument(
         "--llm-base-url",

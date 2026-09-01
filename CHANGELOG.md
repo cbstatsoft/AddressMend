@@ -14,6 +14,11 @@ semantic versioning.
 - Added batched requests, hashed local result caching, environment-only API
   keys, remote-HTTPS enforcement and full personal-data disclosure in the
   README and security guidance.
+- Added masked OpenAI key entry to the Windows desktop menu. PowerShell `setx`
+  persists it for the current user, while AddressMend makes it available to the
+  current run without requiring a restart.
+- Changed the default OpenAI review model to `gpt-5.6-terra`, prioritising
+  correction quality while retaining an explicit model choice.
 
 ## 1.3.1 — 31 August 2026
 
