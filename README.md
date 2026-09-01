@@ -27,11 +27,14 @@ and LibreOffice Calc.
 - Automatically complete strongly corroborated number-only and flat-only
   addresses; retain weaker partial or fuzzy candidates for review.
 - Reuse corrections that a person has previously approved.
+- Optionally search Homedata for unresolved UK address fragments without
+  sending the contact's name or email address.
 - Optionally send only unresolved rows to OpenAI, another OpenAI-compatible API
   or a local Ollama model for a constrained second-stage review.
 - Mark uncertain suggestions for review instead of silently presenting guesses
   as facts.
-- Use the native Windows, macOS, Wayland or X11 clipboard when available.
+- Copy the completed TSV to the native Windows, macOS, Wayland or X11 clipboard
+  after every enabled lookup and LLM stage has finished.
 - Export plain tab-separated text for Microsoft Excel, Apple Numbers and
   LibreOffice Calc.
 
@@ -68,10 +71,13 @@ incomplete; only then does it generate and assess replacements.
 3. **Generate restricted candidates.** Expand at most 128 bracket combinations.
    Postcodes use UK structure and length-preserving OCR character confusions,
    not arbitrary character deletion. Automatic address candidates must be
-   constrained by the supplied postcode; a broad Nominatim search is
-   review-only. Name evidence comes only from delimiter-separated words in the
-   email local part. Valid uncommon email domains remain valid candidates rather
-   than being changed to a popular provider by edit distance.
+   constrained by the supplied postcode. The separately enabled Homedata search
+   may look beyond an incorrect postcode, but only an exact premise or exact
+   named-property completion can pass its automatic gate; a changed premise
+   number is review-only. A broad Nominatim search is also review-only. Name
+   evidence comes only from delimiter-separated words in the email local part.
+   Valid uncommon email domains remain valid candidates rather than being
+   changed to a popular provider by edit distance.
 4. **Reject contradictions.** Discard address candidates with a conflicting
    house, flat or unit number anywhere in the address. Reject ambiguous bracket
    choices, non-unique postcode variants and candidates that fail the relevant
@@ -101,7 +107,7 @@ The evidence used for each field is deliberately different:
 | Field | Candidate evidence | Automatic gate |
 | --- | --- | --- |
 | Title/name | Explicit bracket alternatives; approved person matched by exact email | Unique delimiter-separated email evidence, or approved memory |
-| Address | Offline index, Doogal, optional getAddress.io or Nominatim | Approved memory; harmless equivalent formatting; or a strongly corroborated incomplete premise |
+| Address | Offline index, Doogal, optional Homedata, getAddress.io or Nominatim | Approved memory; harmless equivalent formatting; or a unique exact incomplete premise/property match |
 | Postcode | UK syntax, bracket alternatives, offline postcode index and exact postcodes.io validation | Unique valid bracket/index result or exact canonical formatting; no fuzzy change to an already valid postcode |
 | Email | Wrapper removal, email syntax and explicit bracket alternatives | Harmless formatting or one unique syntactically valid bracket choice; uncommon domains are not similarity-rewritten |
 
@@ -119,6 +125,12 @@ Results are written to `Documents/AddressMend`:
 - `corrections_and_online_cache.sqlite` — approved corrections and cached
   lookups;
 - `uk_addresses.sqlite` — optional offline address/postcode index.
+
+After a desktop-menu batch succeeds, the exact contents of the completed
+`cleaned_entries_…tsv` are also placed on the system clipboard. This happens
+after deterministic lookups and the optional LLM fallback, so the saved file and
+the pasted six-column table are the same final result. Command-line users can
+request the same behaviour with `-o @clipboard`.
 
 On first use, AddressMend tries to rename an existing `AddressMend Results`,
 `UK Address Harmoniser Results` or `UK Address Cleaner Results` folder to the new
@@ -150,16 +162,19 @@ It applies reusable evidence rules:
 3. Validate the exact postcode and match the supplied premise or fragment within
    it using the offline index.
 4. Optionally consult Doogal's postcode-constrained known-address list.
-5. Reject every candidate containing a conflicting premise number, including
+5. If separately enabled, search Homedata with only the unresolved address
+   fragment and postcode. This can recover a mistyped postcode or complete an
+   exact named property. A different house number is never applied automatically.
+6. Reject every candidate containing a conflicting premise number, including
    numbers in flat or building prefixes.
-6. Treat a number-only or flat-only address as detected incomplete input. Apply
+7. Treat a number-only or flat-only address as detected incomplete input. Apply
    a completion only when the postcode-constrained data contains one exact bare
    premise, or when close same-parity neighbours bracket the missing premise on
    the sole street.
-7. Record fuzzy changes to already-complete text, uncorroborated street guesses
+8. Record fuzzy changes to already-complete text, uncorroborated street guesses
    and broad third-party matches as `review` suggestions without changing the
    cleaned TSV.
-8. Retain the supplied value when evidence conflicts or remains incomplete.
+9. Retain the supplied value when evidence conflicts or remains incomplete.
 
 This detector-then-corrector split prevents a plausible lookup from rewriting a
 field that was not demonstrably incomplete. Numeric confidence labels for the
@@ -199,6 +214,7 @@ Option **9** switches to local-only processing.
 | postcodes.io | Exact postcode after conservative local normalisation | Validation and canonical formatting. |
 | Google Public DNS | Domain after `@` only | Check an uncommon email domain; never verifies a mailbox. |
 | OpenStreetMap/Nominatim | Address only when its postcode is missing or invalid | Provisional missing-postcode recovery. |
+| Homedata (separate opt-in) | Unresolved address fragment and postcode only | Wider UK address search, including recovery from an incorrect postcode. |
 | getAddress.io | Partial address and postcode, only when separately configured | Licensed premise lookup. |
 | Remote LLM API | The complete six-field record for a row already marked `review` or `unresolved`, plus its deterministic evidence | Constrained second-stage proposal. |
 
@@ -210,6 +226,18 @@ Nominatim calls are sequential, limited to at most one per second, cached and
 identified with an application user agent in accordance with its
 [public usage policy](https://operations.osmfoundation.org/policies/nominatim/).
 
+Homedata search is off by default. Desktop option **11**, or the command-line
+`--homedata` switch, enables it after disclosure. AddressMend uses only the
+documented unauthenticated address-find endpoint, makes sequential requests and
+caches results when correction memory is enabled. The service states that find
+requests need no API key, but it is a third-party service with no AddressMend
+availability guarantee. Its [terms](https://homedata.co.uk/terms) apply.
+
+AddressMend does not automate Rightmove or similar property-listing websites.
+[Rightmove's terms](https://www.rightmove.co.uk/c/terms-of-use/) prohibit bots,
+crawlers and scrapers. Such sites may still be checked manually when reviewing a
+provisional result, but they are not a safe or stable programme dependency.
+
 ### Optional LLM fallback
 
 LLM processing is off by default. It is a fallback after the deterministic
@@ -218,8 +246,11 @@ search or independently verify an address. The output is constrained to the six
 known fields, checked locally and included in the audit. The cleaner accepts
 three provider modes:
 
-Desktop users can select menu option **10** to configure a provider. On Windows,
-the OpenAI option can accept the key through a hidden prompt and persist
+Desktop users can select menu option **10** to configure a provider. Option
+**12** detects installed memory, recommends a local model, installs Ollama through
+Windows Package Manager with confirmation when available, and downloads the
+chosen model with confirmation. On Windows, the OpenAI option can accept the key
+through a hidden prompt and persist
 `OPENAI_API_KEY` for the current user through PowerShell `setx`. AddressMend also
 loads it into the current process, so no restart is needed. On other platforms,
 set the environment variable before starting the programme.
@@ -229,6 +260,12 @@ set the environment variable before starting the programme.
 | `openai` | OpenAI Responses API with strict Structured Outputs and `store: false` | `https://api.openai.com/v1`, `gpt-5.6-terra`, key in `OPENAI_API_KEY` |
 | `compatible` | OpenAI-compatible `/chat/completions` with JSON output | Base URL and model required; optional key in `LLM_API_KEY` |
 | `ollama` | Native Ollama `/api/chat` with a JSON schema | `http://localhost:11434`; model required; no key |
+
+The guided setup recommends `gpt-oss:20b` (14 GB download) when at least 24 GB
+of system memory is available, `qwen3:8b` (5.2 GB) for 12–23 GB, and
+`qwen3:4b` (2.5 GB) on smaller systems. The extra headroom is deliberate because
+Windows and the rest of the application also need memory. The user may type a
+different Ollama model instead.
 
 ```sh
 # OpenAI (API billing is separate from a ChatGPT subscription)
@@ -242,7 +279,7 @@ export LLM_API_KEY='...'
   --llm-provider compatible --llm-base-url https://llm.example/v1 \
   --llm-model provider-model
 
-# Local Ollama; pull the chosen model first
+# Local Ollama; menu option 12 can install and select this automatically
 ollama pull gpt-oss:20b
 ./addressmend.py clean input.tsv -o output.tsv --audit review.tsv \
   --memory corrections.sqlite --llm-provider ollama --llm-model gpt-oss:20b

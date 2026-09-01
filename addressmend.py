@@ -19,12 +19,15 @@ The programme uses deterministic rules and can:
 * optionally use getAddress.io for premise-level address lookup;
 * validate/canonicalise postcodes with the free postcodes.io API;
 * optionally recover a missing postcode through a rate-limited Nominatim search;
+* optionally search Homedata for unresolved address fragments without sending
+  the contact's name or email;
 * resolve ``[x/y]`` OCR choices only when field evidence selects one option;
 * resolve bracketed name alternatives only from delimiter-separated email evidence;
 * optionally ask OpenAI, an OpenAI-compatible service or local Ollama to review
   rows that deterministic processing could not resolve;
 * learn exact corrections from a raw batch plus an approved batch;
-* use native Windows, macOS, Wayland or X11 clipboard tools when available;
+* copy the final post-LLM TSV through native Windows, macOS, Wayland or X11
+  clipboard tools when available;
 * preserve row order and output six-column, spreadsheet-ready TSV;
 * write an audit TSV describing every change and unresolved issue.
 
@@ -104,7 +107,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 COPYRIGHT = "Copyright (C) 2026 Connor Baird"
 FIELD_NAMES = ("title", "first_name", "last_name", "address", "postcode", "email")
 UK_POSTCODE_RE = re.compile(
@@ -184,6 +187,10 @@ Online fallbacks:
   --nominatim      OpenStreetMap address search only for a missing/invalid
                     postcode. The full address is sent, calls are limited to one
                     per second and results are cached and marked provisional.
+  --homedata        Wider free UK address search for unresolved rows. Only the
+                    address fragment and postcode are sent; names and emails are
+                    excluded. Exact incomplete matches may be applied, while
+                    changed premise numbers remain provisional.
   --validate-email-domains
                     Google Public DNS MX/address lookup for uncommon domains.
                     Only the domain after @ is sent; results are locally cached.
@@ -1101,6 +1108,65 @@ def automatic_incomplete_address(
     return None
 
 
+def unique_named_property_completion(
+    fragment: str, candidates: Sequence[tuple[str, str]]
+) -> tuple[str, str, str, str] | None:
+    """Complete an exact named property only when one candidate extends it."""
+    supplied = squash(fragment)
+    supplied_key = ascii_key(supplied)
+    if (
+        len(supplied_key) < 6
+        or len(supplied_key.split()) < 2
+        or premise_keys(supplied)
+    ):
+        return None
+    matches: dict[tuple[str, str], tuple[str, str]] = {}
+    for candidate, postcode in candidates:
+        parts = [ascii_key(part) for part in candidate.split(",") if ascii_key(part)]
+        candidate_key = ascii_key(candidate)
+        if supplied_key in parts or candidate_key.startswith(supplied_key + " "):
+            canonical = normalise_postcode(postcode)
+            matches[(candidate_key, canonical)] = (squash(candidate), canonical)
+    if len(matches) != 1:
+        return None
+    address, postcode = next(iter(matches.values()))
+    if ascii_key(address) == supplied_key:
+        return None
+    return (
+        address,
+        postcode,
+        "0.96",
+        "unique address whose named-property component exactly matches the incomplete input",
+    )
+
+
+def unique_premise_ocr_suggestion(
+    fragment: str, candidates: Sequence[tuple[str, str]]
+) -> tuple[str, str] | None:
+    """Suggest, but never auto-apply, a one-edit correction to a bare premise."""
+    supplied = squash(fragment)
+    if not re.fullmatch(r"\d+[A-Z]?", supplied, re.I):
+        return None
+    suggestions: dict[tuple[str, str], tuple[str, str]] = {}
+    for address, postcode in candidates:
+        premise = PLAIN_PREMISE_RE.match(squash(address))
+        if not premise:
+            continue
+        candidate = premise.group(1)
+        if candidate.casefold() == supplied.casefold():
+            return None
+        similarity = difflib.SequenceMatcher(
+            None, supplied.casefold(), candidate.casefold()
+        ).ratio()
+        if similarity < 0.65:
+            continue
+        if abs(len(supplied) - len(candidate)) > 1:
+            continue
+        canonical = normalise_postcode(postcode)
+        suggestions[(ascii_key(address), canonical)] = (squash(address), canonical)
+    return next(iter(suggestions.values())) if len(suggestions) == 1 else None
+
+
 def base_address_consensus(
     fragment: str, candidates: Sequence[tuple[str, str]]
 ) -> tuple[str, str] | None:
@@ -1280,6 +1346,8 @@ def http_json_post(url: str, payload: dict, timeout: float = 15.0) -> dict:
 
 _LAST_DOOGAL_REQUEST = 0.0
 _LAST_NOMINATIM_REQUEST = 0.0
+_LAST_HOMEDATA_REQUEST = 0.0
+_HOMEDATA_ERROR_REPORTED = False
 _DOOGAL_SESSION_CACHE: dict[str, list[tuple[str, str]]] = {}
 
 
@@ -1414,6 +1482,86 @@ def nominatim_address_lookup(
                     json.dumps(list(answer) if answer else []),
                     int(time.time()),
                 ),
+            )
+    return answer
+
+
+def homedata_candidates(
+    fragment: str,
+    postcode: str,
+    memory: sqlite3.Connection | None,
+    delay: float = 0.35,
+) -> list[tuple[str, str]]:
+    """Search Homedata's documented unauthenticated address-find endpoint."""
+    global _LAST_HOMEDATA_REQUEST, _HOMEDATA_ERROR_REPORTED
+    query = squash(f"{fragment} {postcode}")
+    cache_key = ascii_key(query)
+    if len(cache_key) < 4:
+        return []
+    if memory:
+        cached = memory.execute(
+            "SELECT payload FROM online_cache WHERE provider='homedata-address' AND query=?",
+            (cache_key,),
+        ).fetchone()
+        if cached:
+            try:
+                values = json.loads(cached[0])
+                return [
+                    (str(value[0]), normalise_postcode(str(value[1])))
+                    for value in values
+                    if isinstance(value, list) and len(value) == 2
+                ]
+            except (TypeError, ValueError):
+                pass
+
+    wait = max(0.25, delay) - (time.monotonic() - _LAST_HOMEDATA_REQUEST)
+    if wait > 0:
+        time.sleep(wait)
+    params = urllib.parse.urlencode({"q": query})
+    request = urllib.request.Request(
+        "https://api.homedata.co.uk/address/find/?" + params,
+        headers={
+            "User-Agent": f"AddressMend/{VERSION} (GPL desktop data cleaner)",
+            "Accept": "application/json",
+        },
+    )
+    answer: list[tuple[str, str]] = []
+    request_succeeded = False
+    try:
+        with urllib.request.urlopen(request, timeout=20.0) as response:
+            payload = json.load(response)
+        _LAST_HOMEDATA_REQUEST = time.monotonic()
+        request_succeeded = True
+        for item in payload.get("suggestions", []) if isinstance(payload, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            postcode_value = normalise_postcode(item.get("postcode", ""))
+            if not valid_postcode(postcode_value):
+                continue
+            parts = [squash(part) for part in str(item.get("address", "")).split(",")]
+            parts = [part for part in parts if part]
+            if parts and normalise_postcode(parts[-1]) == postcode_value:
+                parts.pop()
+            address = smart_case(compact_urban_locality(", ".join(parts)))
+            if address:
+                answer.append((address, postcode_value))
+        answer = list(dict.fromkeys(answer))
+    except urllib.error.HTTPError as exc:
+        if not _HOMEDATA_ERROR_REPORTED:
+            print(
+                f"Homedata address search returned HTTP {exc.code}; "
+                "continuing with the other configured sources.",
+                file=sys.stderr,
+            )
+            _HOMEDATA_ERROR_REPORTED = True
+        answer = []
+    except (urllib.error.URLError, TimeoutError, ValueError, KeyError, TypeError):
+        answer = []
+    if memory and request_succeeded:
+        with memory:
+            memory.execute(
+                "INSERT OR REPLACE INTO online_cache VALUES('homedata-address',?,?,?)",
+                (cache_key, json.dumps(answer, ensure_ascii=False), int(time.time())),
             )
     return answer
 
@@ -1930,6 +2078,8 @@ def explain_active_sources(
         active.append("Doogal known-address fallback")
     if getattr(args, "nominatim", False):
         active.append("OpenStreetMap/Nominatim missing-postcode fallback")
+    if getattr(args, "homedata", False):
+        active.append("Homedata free wider-address search")
     if api_key:
         active.append("getAddress.io licensed fallback")
     if args.online_validate:
@@ -1951,6 +2101,12 @@ def explain_active_sources(
         print(
             "Nominatim receives the address only when its postcode is missing or invalid; "
             "calls are sequential, delayed and cached.",
+            file=sys.stderr,
+        )
+    if getattr(args, "homedata", False):
+        print(
+            "Homedata receives only the unresolved address fragment and postcode; "
+            "calls are sequential and cached when --memory is used.",
             file=sys.stderr,
         )
     if api_key:
@@ -2236,6 +2392,102 @@ def apply_address_lookups(
                         "postcode associated with provisional Doogal address suggestion",
                     )
                     address_matched = True
+
+    if getattr(args, "homedata", False) and record.address and not address_matched:
+        wider = homedata_candidates(
+            record.address,
+            record.postcode,
+            memory,
+            getattr(args, "homedata_delay", 0.35),
+        )
+        automatic = automatic_incomplete_address(
+            record.address, wider, args.address_threshold
+        ) or unique_named_property_completion(record.address, wider)
+        if automatic:
+            address, resolved_pc, confidence, reason = automatic
+            add_change(
+                audit,
+                row_number,
+                "address",
+                record.address,
+                address,
+                confidence,
+                f"{reason} in Homedata address search",
+            )
+            add_change(
+                audit,
+                row_number,
+                "postcode",
+                record.postcode,
+                resolved_pc,
+                confidence,
+                "postcode returned by Homedata address search",
+            )
+            record.address, record.postcode = address, resolved_pc
+            address_matched = True
+            if valid_postcode(resolved_pc):
+                problem = None
+        else:
+            wider_choice = choose_address(
+                record.address, wider, args.address_threshold
+            )
+            if wider_choice and wider_choice[3]:
+                address, resolved_pc, score, _ = wider_choice
+                confidence = (
+                    "formatting"
+                    if ascii_key(record.address) == ascii_key(address)
+                    else "review"
+                )
+                add_change(
+                    audit,
+                    row_number,
+                    "address",
+                    record.address,
+                    address,
+                    confidence,
+                    address_match_reason(
+                        record.address, address, "Homedata address search", resolved_pc
+                    ),
+                )
+                add_change(
+                    audit,
+                    row_number,
+                    "postcode",
+                    record.postcode,
+                    resolved_pc,
+                    confidence,
+                    "postcode associated with Homedata address suggestion",
+                )
+                if confidence == "formatting":
+                    record.address, record.postcode = address, resolved_pc
+                    if valid_postcode(resolved_pc):
+                        problem = None
+                address_matched = True
+            else:
+                premise_suggestion = unique_premise_ocr_suggestion(
+                    record.address, wider
+                )
+                if premise_suggestion:
+                    address, resolved_pc = premise_suggestion
+                    add_change(
+                        audit,
+                        row_number,
+                        "address",
+                        record.address,
+                        address,
+                        "review",
+                        "possible one-character premise OCR error in the sole "
+                        "Homedata result; not applied automatically",
+                    )
+                    add_change(
+                        audit,
+                        row_number,
+                        "postcode",
+                        record.postcode,
+                        resolved_pc,
+                        "review",
+                        "postcode associated with provisional Homedata address suggestion",
+                    )
 
     if api_key and record.postcode and not address_matched:
         suggestions = getaddress_candidates(record.address, record.postcode, api_key)
@@ -3583,6 +3835,70 @@ def self_test() -> int:
         is None
     )
 
+    wider_args = argparse.Namespace(
+        online_validate=False,
+        nominatim=False,
+        doogal=False,
+        doogal_delay=0.0,
+        homedata=True,
+        homedata_delay=0.0,
+        address_threshold=0.84,
+    )
+    wider_examples = (
+        (
+            Record("", "Example", "Person", "40", "NN27 7QQ", ""),
+            [("40 High Street", "NN29 7QQ")],
+            "40 High Street",
+            "NN29 7QQ",
+            True,
+        ),
+        (
+            Record("", "Example", "Person", "Olney Meadows", "MK46 5AA", ""),
+            [("Olney Meadows, 2 Worcester Way", "MK46 5AA")],
+            "Olney Meadows, 2 Worcester Way",
+            "MK46 5AA",
+            True,
+        ),
+        (
+            Record("", "Example", "Person", "121", "LU7 0GY", ""),
+            [("12 The Courtyard, Rock Lane Farm, Liscombe Park", "LU7 0GY")],
+            "121",
+            "LU7 0GY",
+            False,
+        ),
+    )
+    for row_number, (raw, candidates, expected_address, expected_postcode, applied) in enumerate(
+        wider_examples, 1
+    ):
+        wider_audit: list[Audit] = []
+        basic = basic_clean(raw, row_number, wider_audit, True)
+        with patch(__name__ + ".homedata_candidates", return_value=candidates):
+            resolved = apply_address_lookups(
+                raw,
+                basic,
+                row_number,
+                wider_audit,
+                wider_args,
+                None,
+                AddressIndex(None),
+                "",
+            )
+        assert resolved.address == expected_address
+        assert resolved.postcode == expected_postcode
+        if applied:
+            assert any("Homedata" in item.reason for item in wider_audit)
+        else:
+            assert any(
+                item.field == "address"
+                and item.cleaned.startswith("12 The Courtyard")
+                and item.confidence == "review"
+                for item in wider_audit
+            )
+
+    assert recommended_ollama_model(32)[0] == "gpt-oss:20b"
+    assert recommended_ollama_model(16)[0] == "qwen3:8b"
+    assert recommended_ollama_model(8)[0] == "qwen3:4b"
+
     llm_records = [
         Record("Mr", "Example", "Person", "25", "NG12 3HP", "person@example.org"),
         Record("Ms", "Example", "Person", "10 Pedock Close", "NG12 2BX", "x@example.org"),
@@ -3706,6 +4022,41 @@ def self_test() -> int:
     ):
         assert clipboard_backend(write=True) == "macOS clipboard through pbcopy"
         assert clipboard_backend(write=False) == "macOS clipboard through pbpaste"
+
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        source = Path(temporary_directory) / "input.tsv"
+        source.write_text(
+            "Mr\tExample\tPerson\t25\tNG12 3HP\tperson@example.org\n",
+            encoding="utf-8",
+        )
+        clipboard_capture: dict[str, str] = {}
+
+        def finish_locally(output, *unused_args, **unused_kwargs):
+            output[0].address = "25 Final Lane"
+
+        command = parser().parse_args(
+            [
+                "clean",
+                str(source),
+                "-o",
+                "@clipboard",
+                "--llm-provider",
+                "ollama",
+                "--llm-model",
+                "test",
+                "--quiet",
+            ]
+        )
+        with (
+            patch(__name__ + ".apply_llm_fallback", side_effect=finish_locally),
+            patch(
+                __name__ + ".clipboard_set",
+                side_effect=lambda value: clipboard_capture.setdefault("value", value)
+                and "test clipboard",
+            ),
+        ):
+            assert clean_records(command) == 0
+        assert "25 Final Lane" in clipboard_capture["value"]
     print("self-test passed", file=sys.stderr)
     return 0
 
@@ -3742,6 +4093,14 @@ def doctor(args: argparse.Namespace) -> int:
     except Exception as exc:
         clipboard = f"unavailable ({exc}); use the saved TSV file instead"
     print(f"  Clipboard: {clipboard}")
+
+    ollama = find_ollama_executable()
+    ollama_status = (
+        f"ready at {ollama}"
+        if ollama
+        else "not found; menu option 12 can install it"
+    )
+    print(f"  Local Ollama: {ollama_status}")
 
     pyarrow = importlib.util.find_spec("pyarrow") is not None
     osmium = importlib.util.find_spec("osmium") is not None
@@ -3950,6 +4309,7 @@ def friendly_clean(
     temporary: Path | None = None,
     online: bool = True,
     llm_settings: dict[str, object] | None = None,
+    homedata: bool = False,
 ) -> None:
     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
     output = results_dir / f"cleaned_entries_{stamp}.tsv"
@@ -3985,6 +4345,11 @@ def friendly_clean(
             "LLM fallback is ON: unresolved complete contact rows will be sent to "
             f"{llm_settings['llm_provider']}."
         )
+    if online and homedata:
+        print(
+            "Wider address search is ON: unresolved address fragments and postcodes may "
+            "be sent to Homedata; names and emails are never included."
+        )
     if database:
         print(f"Using the offline address database: {database}")
     else:
@@ -4015,6 +4380,8 @@ def friendly_clean(
         doogal_delay=1.05,
         nominatim=online,
         nominatim_delay=1.05,
+        homedata=online and homedata,
+        homedata_delay=0.35,
         getaddress_key_env=getaddress_env,
         llm_provider=(llm_settings or {}).get("llm_provider"),
         llm_model=(llm_settings or {}).get("llm_model"),
@@ -4090,6 +4457,7 @@ def friendly_paste(
     results_dir: Path,
     online: bool = True,
     llm_settings: dict[str, object] | None = None,
+    homedata: bool = False,
 ) -> None:
     text = pasted_text()
     if not text:
@@ -4109,7 +4477,9 @@ def friendly_paste(
         handle.close()
         raise
     temporary = Path(handle.name)
-    friendly_clean(str(temporary), results_dir, temporary, online, llm_settings)
+    friendly_clean(
+        str(temporary), results_dir, temporary, online, llm_settings, homedata
+    )
 
 
 def friendly_build_index(results_dir: Path) -> None:
@@ -4276,6 +4646,128 @@ def friendly_enter_openai_key() -> bool:
     return True
 
 
+def system_memory_gib() -> float | None:
+    """Return installed physical memory without third-party packages."""
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [
+                    ("length", ctypes.c_ulong),
+                    ("memory_load", ctypes.c_ulong),
+                    ("total_physical", ctypes.c_ulonglong),
+                    ("available_physical", ctypes.c_ulonglong),
+                    ("total_page_file", ctypes.c_ulonglong),
+                    ("available_page_file", ctypes.c_ulonglong),
+                    ("total_virtual", ctypes.c_ulonglong),
+                    ("available_virtual", ctypes.c_ulonglong),
+                    ("available_extended_virtual", ctypes.c_ulonglong),
+                ]
+
+            status = MemoryStatus()
+            status.length = ctypes.sizeof(status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return status.total_physical / (1024**3)
+        except (AttributeError, OSError, ValueError):
+            return None
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        page_count = os.sysconf("SC_PHYS_PAGES")
+        return float(page_size * page_count) / (1024**3)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def recommended_ollama_model(memory_gib: float | None) -> tuple[str, str]:
+    """Choose a useful local structured-output model with RAM headroom."""
+    if memory_gib is not None and memory_gib >= 24:
+        return "gpt-oss:20b", "14 GB download; strongest recommended local reviewer"
+    if memory_gib is not None and memory_gib >= 12:
+        return "qwen3:8b", "5.2 GB download; balanced local reviewer"
+    return "qwen3:4b", "2.5 GB download; compact local reviewer"
+
+
+def find_ollama_executable() -> str | None:
+    found = shutil.which("ollama") or shutil.which("ollama.exe")
+    if found:
+        return found
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            candidate = Path(local_app_data) / "Programs" / "Ollama" / "ollama.exe"
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def friendly_setup_ollama() -> dict[str, object] | None:
+    """Install Ollama with consent, pull a RAM-appropriate model and configure it."""
+    import webbrowser
+
+    print()
+    print("SET UP FREE LOCAL OLLAMA")
+    print("Ollama runs the second-stage reviewer on this computer without an API key.")
+    executable = find_ollama_executable()
+    if not executable and os.name == "nt" and shutil.which("winget.exe"):
+        if friendly_yes_no("Install Ollama now with Windows Package Manager?"):
+            completed = subprocess.run(
+                [
+                    shutil.which("winget.exe") or "winget.exe",
+                    "install",
+                    "--id",
+                    "Ollama.Ollama",
+                    "--exact",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ],
+                check=False,
+            )
+            if completed.returncode == 0:
+                executable = find_ollama_executable()
+            else:
+                print("Windows Package Manager did not complete the installation.")
+    if not executable:
+        url = (
+            "https://ollama.com/download/windows"
+            if os.name == "nt"
+            else "https://ollama.com/download"
+        )
+        print(f"Official Ollama download: {url}")
+        if friendly_yes_no("Open the official Ollama download page?"):
+            webbrowser.open(url)
+        print("Install Ollama, then return to this option to download the model.")
+        return None
+
+    memory_gib = system_memory_gib()
+    model, description = recommended_ollama_model(memory_gib)
+    if memory_gib is not None:
+        print(f"Detected memory: {memory_gib:.1f} GB")
+    else:
+        print("Installed memory could not be detected; the compact model is safest.")
+    print(f"Recommended model: {model} ({description})")
+    chosen = input(f"Model [{model}]: ").strip() or model
+    print("The model download can take several minutes and uses several gigabytes.")
+    if not friendly_yes_no(f"Download and configure {chosen} now?"):
+        print("No model was downloaded.")
+        return None
+    try:
+        completed = subprocess.run([executable, "pull", chosen], check=False)
+    except OSError as exc:
+        print(f"Ollama could not be started: {exc}")
+        return None
+    if completed.returncode != 0:
+        print("Ollama did not finish downloading the model.")
+        return None
+    print(f"Ollama model {chosen} is installed and selected for unresolved rows.")
+    return {
+        "llm_provider": "ollama",
+        "llm_model": chosen,
+        "llm_base_url": None,
+        "llm_key_env": None,
+    }
+
+
 def friendly_llm_configuration() -> dict[str, object] | None:
     print()
     print("OPTIONAL LLM FALLBACK")
@@ -4343,6 +4835,7 @@ def friendly_menu() -> int:
     """Desktop-oriented menu used when the script has no arguments."""
     results_dir = friendly_results_directory()
     online = True
+    homedata = False
     llm_settings: dict[str, object] | None = None
     while True:
         print()
@@ -4376,14 +4869,23 @@ def friendly_menu() -> int:
             " 10  Configure LLM fallback "
             f"(currently {llm_settings['llm_provider'] if llm_settings else 'OFF'})"
         )
+        print(
+            " 11  Change wider free address search "
+            f"(currently {'ON' if homedata else 'OFF'})"
+        )
+        print(" 12  Install/configure free local Ollama")
         print("  Q  Close the programme")
         choice = input("\nChoose an option: ").strip().casefold()
         if choice == "1":
-            friendly_paste(results_dir, online, llm_settings)
+            friendly_paste(results_dir, online, llm_settings, homedata)
         elif choice == "2":
             print("The programme will read the text currently copied to the clipboard.")
             friendly_clean(
-                "@clipboard", results_dir, online=online, llm_settings=llm_settings
+                "@clipboard",
+                results_dir,
+                online=online,
+                llm_settings=llm_settings,
+                homedata=homedata,
             )
         elif choice == "3":
             print(
@@ -4392,7 +4894,11 @@ def friendly_menu() -> int:
             source = friendly_path("File: ")
             if source:
                 friendly_clean(
-                    str(source), results_dir, online=online, llm_settings=llm_settings
+                    str(source),
+                    results_dir,
+                    online=online,
+                    llm_settings=llm_settings,
+                    homedata=homedata,
                 )
         elif choice == "4":
             friendly_download(results_dir)
@@ -4423,11 +4929,29 @@ def friendly_menu() -> int:
                 )
         elif choice == "10":
             llm_settings = friendly_llm_configuration()
+        elif choice == "11":
+            if homedata:
+                homedata = False
+                print("Wider address search is now OFF.")
+            else:
+                print(
+                    "This sends only each unresolved address fragment and postcode to "
+                    "Homedata's free address-search API. It never sends names or emails."
+                )
+                print(
+                    "Results are cached locally; Homedata is a third-party service whose "
+                    "availability and terms can change."
+                )
+                homedata = friendly_yes_no("Enable wider free address search?")
+        elif choice == "12":
+            configured = friendly_setup_ollama()
+            if configured:
+                llm_settings = configured
         elif choice in {"q", "quit", "exit"}:
             print("You may now close this window.")
             return 0
         else:
-            print("Please choose 1 to 10, or Q to close the programme.")
+            print("Please choose 1 to 12, or Q to close the programme.")
         input("\nPress Enter to return to the main menu...")
 
 
@@ -4485,6 +5009,18 @@ def parser() -> argparse.ArgumentParser:
         type=float,
         default=1.05,
         help="minimum seconds between Nominatim calls; values below 1.05 are ignored",
+    )
+    clean.add_argument(
+        "--homedata",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="search Homedata with unresolved address fragment and postcode (opt-in)",
+    )
+    clean.add_argument(
+        "--homedata-delay",
+        type=float,
+        default=0.35,
+        help="minimum seconds between Homedata address-search calls (default 0.35)",
     )
     clean.add_argument(
         "--getaddress-key-env",
