@@ -16,6 +16,8 @@ semantic versioning.
   corrections inside AddressMend without editing a TSV manually.
 - Save approvals to a new approved TSV, copy it to the system clipboard, retain
   a decision report and record decisions locally for reuse and calibration.
+- Pin interactive cleaning and LLM progress bars to the bottom console line
+  while row explanations continue above them; redirected logs retain milestones.
 - Documented the distinction between string-match scores, statistical
   confidence intervals and operational match evidence using ONS, GeoPlace and
   OCR post-correction guidance.
