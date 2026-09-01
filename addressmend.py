@@ -287,6 +287,15 @@ class LLMConfig:
     ollama_web_key: str = ""
 
 
+@dataclass
+class LLMRunStats:
+    requested_rows: int = 0
+    automatically_changed_rows: int = 0
+    review_only_rows: int = 0
+    no_change_rows: int = 0
+    failed: bool = False
+
+
 def squash(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "").replace("\u00a0", " ")).strip()
 
@@ -3411,10 +3420,10 @@ def apply_llm_fallback(
     config: LLMConfig,
     quiet: bool,
     explain: bool = False,
-) -> None:
+) -> LLMRunStats:
     requests = llm_issues(output, audit)
     if not requests:
-        return
+        return LLMRunStats()
     allowed = {
         int(item["row"]): {str(issue["field"]) for issue in item["issues"]}  # type: ignore[index]
         for item in requests
@@ -3425,6 +3434,8 @@ def apply_llm_fallback(
             f"model {config.model} in batches of {config.batch_size}",
             file=sys.stderr,
         )
+    automatically_changed: set[int] = set()
+    held_for_review: set[int] = set()
     for start in range(0, len(requests), config.batch_size):
         batch = requests[start : start + config.batch_size]
         llm_batch = augment_ollama_web_evidence(batch, memory, config, quiet)
@@ -3479,6 +3490,7 @@ def apply_llm_fallback(
                                 f"{config.provider}/{config.model}: proposal failed local validation",
                             )
                         )
+                        held_for_review.add(row_number)
                     continue
                 if value == current:
                     continue
@@ -3503,6 +3515,7 @@ def apply_llm_fallback(
                         f"{config.provider}/{config.model}: {reason}",
                     )
                     setattr(record, field, value)
+                    automatically_changed.add(row_number)
                     if explain:
                         print(
                             f"row {row_number}: LLM changed {field}: "
@@ -3526,12 +3539,112 @@ def apply_llm_fallback(
                             f"{config.provider}/{config.model}: {held_reason}",
                         )
                     )
+                    held_for_review.add(row_number)
                     if explain:
                         print(
                             f"row {row_number}: LLM proposed {field}: "
                             f"{current!r} -> {value!r} for review ({held_reason})",
                             file=sys.stderr,
                         )
+    review_only = held_for_review - automatically_changed
+    no_change = set(allowed) - automatically_changed - held_for_review
+    return LLMRunStats(
+        requested_rows=len(requests),
+        automatically_changed_rows=len(automatically_changed),
+        review_only_rows=len(review_only),
+        no_change_rows=len(no_change),
+    )
+
+
+def batch_completion_categories(
+    row_count: int, audit: Sequence[Audit]
+) -> dict[str, int]:
+    """Assign every row to one exclusive final-outcome category."""
+    rows = set(range(1, row_count + 1))
+    outstanding = {
+        event.row
+        for event in audit
+        if event.confidence in {"review", "unresolved"} and event.row in rows
+    }
+    llm_changed = {
+        event.row
+        for event in audit
+        if event.confidence == "llm-high" and event.original != event.cleaned
+    }
+    learned = {
+        event.row
+        for event in audit
+        if event.confidence == "learned" and event.original != event.cleaned
+    }
+    automatically_changed = {
+        event.row
+        for event in audit
+        if event.original != event.cleaned
+        and event.confidence not in {"review", "unresolved", "verified"}
+    }
+    llm_completed = (llm_changed & rows) - outstanding
+    learned_completed = (learned & rows) - outstanding - llm_completed
+    deterministic_completed = (
+        (automatically_changed & rows)
+        - outstanding
+        - llm_completed
+        - learned_completed
+    )
+    no_correction_needed = (
+        rows
+        - outstanding
+        - llm_completed
+        - learned_completed
+        - deterministic_completed
+    )
+    return {
+        "no_correction_needed": len(no_correction_needed),
+        "deterministic": len(deterministic_completed),
+        "learned": len(learned_completed),
+        "llm": len(llm_completed),
+        "outstanding": len(outstanding),
+    }
+
+
+def print_batch_completion_report(
+    row_count: int,
+    audit: Sequence[Audit],
+    llm_stats: LLMRunStats,
+) -> None:
+    categories = batch_completion_categories(row_count, audit)
+
+    def percentage(count: int, denominator: int = row_count) -> float:
+        return 100.0 * count / denominator if denominator else 0.0
+
+    completed = row_count - categories["outstanding"]
+    print(
+        f"batch completion: {completed}/{row_count} rows ({percentage(completed):.1f}%)",
+        file=sys.stderr,
+    )
+    labels = (
+        ("no correction needed", "no_correction_needed"),
+        ("deterministic rules/lookups", "deterministic"),
+        ("approved correction memory", "learned"),
+        ("LLM automatic completion", "llm"),
+        ("still review/unresolved", "outstanding"),
+    )
+    for label, key in labels:
+        count = categories[key]
+        print(
+            f"  {label}: {count}/{row_count} ({percentage(count):.1f}%)",
+            file=sys.stderr,
+        )
+    if llm_stats.requested_rows:
+        requested = llm_stats.requested_rows
+        status = "; provider request failed" if llm_stats.failed else ""
+        print(
+            f"  LLM rows sent: {requested}/{row_count} ({percentage(requested):.1f}%); "
+            f"auto-changed {llm_stats.automatically_changed_rows}/{requested} "
+            f"({percentage(llm_stats.automatically_changed_rows, requested):.1f}% of sent); "
+            f"review-only {llm_stats.review_only_rows}; "
+            f"no usable change {llm_stats.no_change_rows}{status}",
+            file=sys.stderr,
+        )
 
 
 def clean_records(args: argparse.Namespace) -> int:
@@ -3595,9 +3708,11 @@ def clean_records_with_resources(
         output.append(record)
         explain_row(args, row_number, record, audit[audit_start:])
 
+    llm_stats = LLMRunStats()
     if llm:
+        llm_stats.requested_rows = len(llm_issues(output, audit))
         try:
-            apply_llm_fallback(
+            completed_stats = apply_llm_fallback(
                 output,
                 audit,
                 memory,
@@ -3605,7 +3720,27 @@ def clean_records_with_resources(
                 args.quiet,
                 getattr(args, "explain", False),
             )
+            if isinstance(completed_stats, LLMRunStats):
+                llm_stats = completed_stats
         except RuntimeError as exc:
+            changed_rows = {
+                event.row for event in audit if event.confidence == "llm-high"
+            }
+            review_rows = {
+                event.row
+                for event in audit
+                if event.confidence == "review"
+                and event.reason.startswith(f"{llm.provider}/{llm.model}:")
+            }
+            llm_stats.automatically_changed_rows = len(changed_rows)
+            llm_stats.review_only_rows = len(review_rows - changed_rows)
+            llm_stats.no_change_rows = max(
+                0,
+                llm_stats.requested_rows
+                - len(changed_rows)
+                - len(review_rows - changed_rows),
+            )
+            llm_stats.failed = True
             if not args.quiet:
                 print(f"LLM fallback unavailable; keeping deterministic results: {exc}", file=sys.stderr)
 
@@ -3636,6 +3771,7 @@ def clean_records_with_resources(
                 "enable --doogal, use a licensed API, or approve them once with the learn command.",
                 file=sys.stderr,
             )
+        print_batch_completion_report(len(output), audit, llm_stats)
     exit_status = 0 if not (args.fail_on_unresolved and (unresolved or review)) else 2
     return exit_status
 
@@ -4565,13 +4701,29 @@ def self_test() -> int:
         ]
     }
     with patch(__name__ + ".cached_llm_result", return_value=llm_response):
-        apply_llm_fallback(llm_records, llm_audit, None, test_llm, True)
+        test_llm_stats = apply_llm_fallback(
+            llm_records, llm_audit, None, test_llm, True
+        )
+    assert test_llm_stats == LLMRunStats(3, 1, 2, 0, False)
     assert llm_records[0].address == "25 Mill Lane"
     assert any(a.row == 1 and a.confidence == "llm-high" for a in llm_audit)
     assert not any(a.row == 1 and a.confidence == "unresolved" for a in llm_audit)
     assert llm_records[1].address == "10 Pedock Close"
     assert any(a.row == 2 and a.cleaned == "10 Paddock Close" and a.confidence == "review" for a in llm_audit)
     assert llm_records[2].address == "31"
+    category_fixture = [
+        Audit(2, "address", "Careton Road", "Carlton Road", "0.98", "unique OCR"),
+        Audit(3, "postcode", "AB1 2CD", "AB1 2CE", "learned", "approved memory"),
+        Audit(4, "address", "25", "25 Mill Lane", "llm-high", "local model"),
+        Audit(5, "address", "31", "31", "unresolved", "house number only"),
+    ]
+    assert batch_completion_categories(5, category_fixture) == {
+        "no_correction_needed": 1,
+        "deterministic": 1,
+        "learned": 1,
+        "llm": 1,
+        "outstanding": 1,
+    }
     empty_llm_json = json.dumps({"rows": []})
     with patch(
         __name__ + ".post_json",

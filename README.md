@@ -136,6 +136,16 @@ native Unicode clipboard API and reads the value back before reporting success.
 Paste the result into the first spreadsheet cell with Ctrl+V; Ctrl+C in the
 AddressMend console is an interrupt, not a clipboard-copy command.
 
+Every non-quiet batch ends with a row-level completion report. It assigns each
+row to exactly one final category—no correction needed, deterministic
+rules/lookups, approved correction memory, LLM automatic completion, or still
+review/unresolved—and prints the count and percentage of the full batch. When an
+LLM is enabled, a second line reports the percentage sent to it and how many of
+those rows were automatically changed, retained only as review suggestions, or
+left without a usable change. Rows that received both deterministic work and a
+final LLM completion are attributed to the LLM, so the five main categories do
+not double-count rows.
+
 On first use, AddressMend tries to rename an existing `AddressMend Results`,
 `UK Address Harmoniser Results` or `UK Address Cleaner Results` folder to the new
 `AddressMend` name. If the operating system prevents the rename, the old folder
