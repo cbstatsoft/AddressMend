@@ -65,7 +65,10 @@ incomplete; only then does it generate and assess replacements.
    fallback.
 2. **Detect a possible OCR problem.** Detection is field-specific: square
    brackets indicate explicit alternatives; invalid syntax can flag a postcode
-   or email; and a bare house/flat number is an incomplete address. A complete,
+   or email; and a bare house/flat number is an incomplete address. Merely
+   having text in the address field does not prove that the address is complete
+   or correctly spelt. A single street name is kept but marked unresolved
+   because its premise or named-property identifier is missing. A complete,
    syntactically valid name or address is changed only when a constrained source
    supplies a unique one-character correction with no premise contradiction.
 3. **Generate restricted candidates.** Expand at most 128 bracket combinations.
@@ -84,10 +87,14 @@ incomplete; only then does it generate and assess replacements.
    field syntax.
 5. **Apply only a supported winner.** Previously approved exact corrections take
    priority. A new correction is automatic only when there is one exact bare
-   premise, an exact named-property extension, close same-parity neighbours on
-   the sole street, or one compatible address separated by exactly one OCR
-   insertion, deletion or substitution. The numeric rule confidence must also
-   meet `--address-threshold` where applicable.
+   premise, one postcode-constrained candidate that strictly extends the same
+   premise/property text, close same-parity neighbours on the sole street, or
+   one compatible address separated by exactly one OCR insertion, deletion or
+   substitution. A postcode's numbered properties may establish the spelling
+   of a supplied street name, but AddressMend returns only that corrected street
+   name and still flags the missing premise; it never borrows a house number.
+   The numeric rule confidence must also meet `--address-threshold` where
+   applicable.
 6. **Abstain and explain.** Fuzzy changes to complete text, broad online matches
    and conflicting or incomplete evidence are written as `review` or
    `unresolved`. They do not replace the field in the cleaned TSV.
@@ -108,7 +115,7 @@ The evidence used for each field is deliberately different:
 | Field | Candidate evidence | Automatic gate |
 | --- | --- | --- |
 | Title/name | Explicit bracket alternatives; approved person matched by exact email | Unique delimiter-separated email evidence, or approved memory |
-| Address | Offline index, Doogal, Homedata, optional getAddress.io or Nominatim | Approved memory; harmless formatting; an exact incomplete match; or one unique one-character correction with no premise contradiction |
+| Address | Offline index, Doogal, Homedata, optional getAddress.io or Nominatim | Approved memory; harmless formatting; a unique strict completion preserving the premise; or one unique one-character correction with no premise contradiction. Street-only values stay unresolved. |
 | Postcode | UK syntax, bracket alternatives, offline postcode index and exact postcodes.io validation | Unique valid bracket/index result or exact canonical formatting; no fuzzy change to an already valid postcode |
 | Email | Wrapper removal, email syntax and explicit bracket alternatives | Harmless formatting or one unique syntactically valid bracket choice; uncommon domains are not similarity-rewritten |
 
@@ -181,15 +188,20 @@ It applies reusable evidence rules:
    exact named property.
 6. Reject every candidate containing a conflicting premise number, including
    numbers in flat or building prefixes.
-7. Treat a number-only or flat-only address as detected incomplete input. Apply
-   a completion only when the postcode-constrained data contains one exact bare
-   premise, or when close same-parity neighbours bracket the missing premise on
-   the sole street.
-8. Apply a unique one-character street correction automatically when its premise
-   is unchanged. A sole one-character bare-premise OCR correction can also be
-   applied when no competing compatible address exists. Broader fuzzy changes
-   remain `review` suggestions without changing the cleaned TSV.
-9. Retain the supplied value when evidence conflicts or remains incomplete.
+7. Treat number-only, flat-only and street-only text as detected incomplete
+   input even though the address field is non-empty. Apply a completion only
+   when postcode-constrained data contains one exact bare premise, one strict
+   extension with identical premise identifiers, or close same-parity
+   neighbours around the missing premise on the sole street.
+8. Apply a unique one-character address correction automatically when its
+   premise is unchanged. This includes a misspelt street suffix or named
+   property. Repeated numbered candidates can verify a street's spelling, but
+   the result stays street-only and unresolved instead of acquiring an
+   unsupported number. A sole one-character bare-premise OCR correction can
+   also be applied when no competing compatible address exists. Broader fuzzy
+   changes remain `review` suggestions without changing the cleaned TSV.
+9. Retain and flag the supplied value when evidence conflicts or the address
+   remains incomplete.
 
 This detector-then-corrector split prevents a plausible lookup from rewriting a
 field that was not demonstrably incomplete. Numeric confidence labels for the
