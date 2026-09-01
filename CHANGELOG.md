@@ -3,6 +3,23 @@
 All notable changes to AddressMend are recorded here. The project uses
 semantic versioning.
 
+## 1.6.0 — 1 September 2026
+
+- Added a default 0.99 operational evidence tier that promotes an otherwise
+  provisional address only when two lookup families return the same candidate,
+  the postcode is valid, no competing candidate remains and supplied premise
+  identifiers are preserved exactly.
+- Added an explicit `--auto-approve-threshold 0.95` option for operators who
+  accept single-source structurally safe candidates, with a visible warning
+  about the higher silent-error risk.
+- Added desktop option 14 for approving, rejecting or deferring flagged
+  corrections inside AddressMend without editing a TSV manually.
+- Save approvals to a new approved TSV, copy it to the system clipboard, retain
+  a decision report and record decisions locally for reuse and calibration.
+- Documented the distinction between string-match scores, statistical
+  confidence intervals and operational match evidence using ONS, GeoPlace and
+  OCR post-correction guidance.
+
 ## 1.4.0 — 1 September 2026
 
 - Added an explicitly opt-in LLM fallback for rows left unresolved by the

@@ -27,6 +27,9 @@ The programme uses deterministic rules and can:
   rows that deterministic processing could not resolve;
 * optionally augment local Ollama address/postcode review with bounded results
   from Ollama's official web-search API, without sending names or emails;
+* promote one premise-preserving review candidate when lookup evidence reaches
+  the configured 0.99 automatic-insertion tier;
+* approve, reject or defer flagged corrections inside the desktop menu;
 * learn exact corrections from a raw batch plus an approved batch;
 * copy the final post-LLM TSV through native Windows, macOS, Wayland or X11
   clipboard tools when available;
@@ -109,9 +112,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Iterator, Sequence, TextIO
+from typing import Callable, Iterable, Iterator, Sequence, TextIO
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
+DEFAULT_REVIEW_THRESHOLD = 0.95
+DEFAULT_AUTO_APPROVE_THRESHOLD = 0.99
 COPYRIGHT = "Copyright (C) 2026 Connor Baird"
 FIELD_NAMES = ("title", "first_name", "last_name", "address", "postcode", "email")
 UK_POSTCODE_RE = re.compile(
@@ -274,6 +279,16 @@ class Audit:
     original: str
     cleaned: str
     confidence: str
+    reason: str
+
+
+@dataclass
+class ReviewDecision:
+    row: int
+    field: str
+    current: str
+    suggestion: str
+    decision: str
     reason: str
 
 
@@ -926,6 +941,172 @@ def write_audit(audit: Sequence[Audit], path: str) -> None:
         writer.writerows([getattr(a, f.name) for f in fields(Audit)] for a in audit)
 
 
+def read_audit(path: str) -> list[Audit]:
+    """Read an AddressMend review report and reject malformed rows."""
+    result: list[Audit] = []
+    with open(path, encoding="utf-8-sig", newline="") as stream:
+        reader = csv.DictReader(stream, delimiter="\t")
+        required = {field.name for field in fields(Audit)}
+        if not reader.fieldnames or not required <= set(reader.fieldnames):
+            raise ValueError("the review report does not have the expected columns")
+        for item in reader:
+            try:
+                row = int(item["row"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "the review report contains an invalid row number"
+                ) from exc
+            result.append(
+                Audit(
+                    row,
+                    squash(item["field"]),
+                    squash(item["original"]),
+                    squash(item["cleaned"]),
+                    squash(item["confidence"]),
+                    squash(item["reason"]),
+                )
+            )
+    return result
+
+
+def flagged_review_candidates(audit: Sequence[Audit]) -> list[Audit]:
+    """Return unique, actionable review suggestions in report order."""
+    grouped: dict[tuple[int, str, str], Audit] = {}
+    reasons: dict[tuple[int, str, str], list[str]] = {}
+    for event in audit:
+        if (
+            event.confidence != "review"
+            or event.field not in FIELD_NAMES
+            or not event.cleaned
+            or event.cleaned == event.original
+        ):
+            continue
+        key = (event.row, event.field, ascii_key(event.cleaned))
+        grouped.setdefault(key, event)
+        reasons.setdefault(key, [])
+        if event.reason not in reasons[key]:
+            reasons[key].append(event.reason)
+    return [
+        Audit(
+            event.row,
+            event.field,
+            event.original,
+            event.cleaned,
+            event.confidence,
+            "; corroborated by: ".join(reasons[key]),
+        )
+        for key, event in grouped.items()
+    ]
+
+
+def write_review_decisions(decisions: Sequence[ReviewDecision], path: str) -> None:
+    with open(
+        path, "w", encoding="utf-8-sig" if os.name == "nt" else "utf-8", newline=""
+    ) as stream:
+        writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+        writer.writerow([field.name for field in fields(ReviewDecision)])
+        writer.writerows(
+            [getattr(decision, field.name) for field in fields(ReviewDecision)]
+            for decision in decisions
+        )
+
+
+def review_flagged_corrections(
+    records: list[Record],
+    audit: Sequence[Audit],
+    memory: sqlite3.Connection | None,
+    prompt: Callable[[str], str] | None = None,
+) -> list[ReviewDecision]:
+    """Interactively approve, reject or defer provisional field corrections."""
+    ask = prompt or input
+    decisions: list[ReviewDecision] = []
+    resolved_fields: set[tuple[int, str]] = set()
+    candidates = flagged_review_candidates(audit)
+    stopped = False
+    for position, candidate in enumerate(candidates, 1):
+        if not 1 <= candidate.row <= len(records):
+            continue
+        key = (candidate.row, candidate.field)
+        if key in resolved_fields:
+            continue
+        record = records[candidate.row - 1]
+        current = getattr(record, candidate.field)
+        suggestion = locally_valid_llm_value(
+            candidate.field, current, candidate.cleaned
+        )
+        if suggestion is None or suggestion == current:
+            continue
+        print()
+        print(f"FLAGGED CORRECTION {position}/{len(candidates)} — row {candidate.row}")
+        print(f"Person: {record.title} {record.first_name} {record.last_name}".strip())
+        print(f"Field: {candidate.field}")
+        print(f"Current:   {current or '(blank)'}")
+        print(f"Suggested: {suggestion}")
+        print(f"Evidence:  {candidate.reason}")
+        while True:
+            choice = ask(
+                "Approve [A], keep current [K], skip [S], or finish [Q]: "
+            ).strip().casefold()
+            if choice in {"a", "approve", "y", "yes"}:
+                setattr(record, candidate.field, suggestion)
+                decision = "approved"
+                resolved_fields.add(key)
+                break
+            if choice in {"k", "keep", "n", "no", "reject"}:
+                decision = "rejected"
+                break
+            if choice in {"s", "skip"}:
+                decision = "skipped"
+                break
+            if choice in {"q", "quit", "finish"}:
+                stopped = True
+                break
+            print("Please type A, K, S or Q.")
+        if stopped:
+            break
+        decisions.append(
+            ReviewDecision(
+                candidate.row,
+                candidate.field,
+                current,
+                suggestion,
+                decision,
+                candidate.reason,
+            )
+        )
+
+    if memory and decisions:
+        now = int(time.time())
+        with memory:
+            memory.executemany(
+                "INSERT INTO review_decisions VALUES(?,?,?,?,?,?,?)",
+                [
+                    (
+                        now,
+                        decision.row,
+                        decision.field,
+                        decision.current,
+                        decision.suggestion,
+                        decision.decision,
+                        decision.reason,
+                    )
+                    for decision in decisions
+                ],
+            )
+            for decision in decisions:
+                if decision.decision != "approved" or decision.field != "address":
+                    continue
+                record = records[decision.row - 1]
+                postcode = normalise_postcode(record.postcode)
+                fragment = ascii_key(decision.current)
+                if fragment and record.address and valid_postcode(postcode):
+                    memory.execute(
+                        "INSERT OR REPLACE INTO address_memory VALUES(?,?,?,?,?)",
+                        (postcode, fragment, record.address, postcode, now),
+                    )
+    return decisions
+
+
 def connect_memory(path: str | None) -> sqlite3.Connection | None:
     if not path:
         return None
@@ -949,6 +1130,12 @@ def connect_memory(path: str | None) -> sqlite3.Connection | None:
         CREATE TABLE IF NOT EXISTS online_cache(
             provider TEXT NOT NULL, query TEXT NOT NULL, payload TEXT NOT NULL,
             checked_at INTEGER NOT NULL, PRIMARY KEY(provider,query)
+        );
+        CREATE TABLE IF NOT EXISTS review_decisions(
+            decided_at INTEGER NOT NULL, row_number INTEGER NOT NULL,
+            field TEXT NOT NULL, current_value TEXT NOT NULL,
+            suggestion TEXT NOT NULL, decision TEXT NOT NULL,
+            reason TEXT NOT NULL
         );
         """)
     return db
@@ -2137,6 +2324,130 @@ def clear_provisional_address_reviews(audit: list[Audit], row: int) -> None:
     ]
 
 
+def address_evidence_source(reason: str) -> str | None:
+    """Map an audit explanation to a distinct lookup family.
+
+    The returned name is deliberately coarse.  Two results from the same service
+    do not become corroboration merely because they appeared in separate calls.
+    LLM output is excluded because it can restate the lookup evidence it received.
+    """
+    key = ascii_key(reason)
+    if "llm" in key or key.startswith(("openai ", "ollama ", "compatible ")):
+        return None
+    families = (
+        ("getaddress", "getAddress.io"),
+        ("homedata", "Homedata"),
+        ("doogal", "Doogal"),
+        ("nominatim", "Nominatim"),
+        ("openstreetmap", "Nominatim"),
+        ("offline address index", "offline index"),
+    )
+    return next((label for token, label in families if token in key), None)
+
+
+def corroborated_review_candidate(
+    record: Record,
+    row_number: int,
+    audit: Sequence[Audit],
+) -> tuple[str, str, float, tuple[str, ...]] | None:
+    """Score one structurally safe review suggestion from lookup agreement.
+
+    A single lookup family supplies the 0.95 review tier.  Exact agreement by at
+    least two families supplies the 0.99 automatic tier.  These are operational
+    evidence scores, not probabilities inferred from raw string similarity.
+    """
+    postcode_by_source: dict[str, str] = {}
+    for event in audit:
+        if (
+            event.row == row_number
+            and event.field == "postcode"
+            and event.confidence == "review"
+        ):
+            source = address_evidence_source(event.reason)
+            postcode = normalise_postcode(event.cleaned)
+            if source and valid_postcode(postcode):
+                postcode_by_source[source] = postcode
+
+    grouped: dict[tuple[str, str], dict[str, object]] = {}
+    supplied_premises = premise_keys(record.address)
+    for event in audit:
+        if (
+            event.row != row_number
+            or event.field != "address"
+            or event.confidence != "review"
+        ):
+            continue
+        source = address_evidence_source(event.reason)
+        candidate = squash(event.cleaned)
+        postcode = postcode_by_source.get(
+            source or "", normalise_postcode(record.postcode)
+        )
+        if not source or not candidate or not valid_postcode(postcode):
+            continue
+        if premise_keys(candidate) != supplied_premises:
+            continue
+        if locally_valid_llm_value("address", record.address, candidate) is None:
+            continue
+        key = (ascii_key(candidate), postcode)
+        item = grouped.setdefault(
+            key,
+            {"address": candidate, "postcode": postcode, "sources": set()},
+        )
+        sources = item["sources"]
+        assert isinstance(sources, set)
+        sources.add(source)
+
+    # Any competing structurally valid suggestion makes the result ambiguous.
+    if len(grouped) != 1:
+        return None
+    item = next(iter(grouped.values()))
+    sources = tuple(sorted(item["sources"]))  # type: ignore[arg-type]
+    ratio = 0.99 if len(sources) >= 2 else DEFAULT_REVIEW_THRESHOLD
+    return str(item["address"]), str(item["postcode"]), ratio, sources
+
+
+def promote_corroborated_address_review(
+    record: Record,
+    row_number: int,
+    audit: list[Audit],
+    threshold: float,
+) -> bool:
+    """Apply a review candidate only when its evidence tier meets the threshold."""
+    candidate = corroborated_review_candidate(record, row_number, audit)
+    if not candidate:
+        return False
+    address, postcode, ratio, sources = candidate
+    if ratio + 1e-12 < threshold:
+        return False
+    old_address, old_postcode = record.address, record.postcode
+    clear_provisional_address_reviews(audit, row_number)
+    reason = (
+        f"corroborated by {len(sources)} lookup families: {', '.join(sources)}"
+        if len(sources) >= 2
+        else f"single-source review candidate from {sources[0]}"
+    )
+    add_change(
+        audit,
+        row_number,
+        "address",
+        old_address,
+        address,
+        f"{ratio:.2f}",
+        reason,
+    )
+    add_change(
+        audit,
+        row_number,
+        "postcode",
+        old_postcode,
+        postcode,
+        f"{ratio:.2f}",
+        reason,
+    )
+    record.address, record.postcode = address, postcode
+    return True
+
+
 def consolidate_audit(audit: Sequence[Audit]) -> list[Audit]:
     """Collapse sequential applied edits into one original-to-final event."""
     result: list[Audit] = []
@@ -2898,6 +3209,14 @@ def apply_address_lookups(
                     record.address, record.postcode = address, resolved_pc
                     if valid_postcode(resolved_pc):
                         problem = None
+
+    if promote_corroborated_address_review(
+        record,
+        row_number,
+        audit,
+        getattr(args, "auto_approve_threshold", DEFAULT_AUTO_APPROVE_THRESHOLD),
+    ):
+        problem = None
 
     if problem:
         suggestion = record.postcode
@@ -3753,6 +4072,20 @@ def print_batch_completion_report(
 
 
 def clean_records(args: argparse.Namespace) -> int:
+    automatic_threshold = float(
+        getattr(args, "auto_approve_threshold", DEFAULT_AUTO_APPROVE_THRESHOLD)
+    )
+    if not DEFAULT_REVIEW_THRESHOLD <= automatic_threshold <= 1.0:
+        raise SystemExit(
+            "--auto-approve-threshold must be between 0.95 and 1.00"
+        )
+    if automatic_threshold < DEFAULT_AUTO_APPROVE_THRESHOLD and not getattr(
+        args, "quiet", False
+    ):
+        print(
+            "warning: an automatic threshold below 0.99 can increase silent address errors",
+            file=sys.stderr,
+        )
     raw_records = read_records(args.input)
     memory = connect_memory(args.memory)
     index: AddressIndex | None = None
@@ -4831,6 +5164,111 @@ def self_test() -> int:
     assert default_clean.validate_email_domains
     assert default_clean.ollama_web_search
     assert default_clean.llm_provider is None
+    assert default_clean.auto_approve_threshold == DEFAULT_AUTO_APPROVE_THRESHOLD
+
+    corroborated_record = Record(
+        "", "Example", "Person", "10 Careton Road", "NG12 3HP", ""
+    )
+    corroborated_audit = [
+        Audit(
+            1,
+            "address",
+            "10 Careton Road",
+            "10 Carlton Road",
+            "review",
+            "OCR-corrected and harmonised address from Doogal known addresses",
+        ),
+        Audit(
+            1,
+            "address",
+            "10 Careton Road",
+            "10 Carlton Road",
+            "review",
+            "OCR-corrected and harmonised address from Homedata address search",
+        ),
+    ]
+    candidate = corroborated_review_candidate(
+        corroborated_record, 1, corroborated_audit
+    )
+    assert candidate and candidate[2] == 0.99 and len(candidate[3]) == 2
+    assert promote_corroborated_address_review(
+        corroborated_record, 1, corroborated_audit, 0.99
+    )
+    assert corroborated_record.address == "10 Carlton Road"
+    assert any(event.confidence == "0.99" for event in corroborated_audit)
+    assert not any(event.confidence == "review" for event in corroborated_audit)
+
+    single_record = Record("", "", "", "10 Careton Road", "NG12 3HP", "")
+    single_audit = [
+        Audit(
+            1,
+            "address",
+            "10 Careton Road",
+            "10 Carlton Road",
+            "review",
+            "candidate from Homedata address search",
+        )
+    ]
+    assert not promote_corroborated_address_review(
+        single_record, 1, single_audit, 0.99
+    )
+    assert promote_corroborated_address_review(
+        single_record, 1, single_audit, 0.95
+    )
+    conflicting_audit = [
+        Audit(1, "address", "10 Careton Road", "10 Carlton Road", "review", "Doogal"),
+        Audit(1, "address", "10 Careton Road", "10 Carter Road", "review", "Homedata"),
+    ]
+    assert (
+        corroborated_review_candidate(
+            Record("", "", "", "10 Careton Road", "NG12 3HP", ""),
+            1,
+            conflicting_audit,
+        )
+        is None
+    )
+    premise_conflict_audit = [
+        Audit(1, "address", "10 Careton Road", "12 Carlton Road", "review", "Doogal"),
+        Audit(1, "address", "10 Careton Road", "12 Carlton Road", "review", "Homedata"),
+    ]
+    assert (
+        corroborated_review_candidate(
+            Record("", "", "", "10 Careton Road", "NG12 3HP", ""),
+            1,
+            premise_conflict_audit,
+        )
+        is None
+    )
+
+    approval_records = [
+        Record("Mr", "Example", "Person", "10 Careton Road", "NG12 3HP", "")
+    ]
+    approval_audit = [
+        Audit(
+            1,
+            "address",
+            "10 Careton Road",
+            "10 Carlton Road",
+            "review",
+            "single useful lookup candidate",
+        )
+    ]
+    approval_memory = connect_memory(":memory:")
+    assert approval_memory is not None
+    approval_decisions = review_flagged_corrections(
+        approval_records, approval_audit, approval_memory, lambda _question: "a"
+    )
+    assert approval_records[0].address == "10 Carlton Road"
+    assert approval_decisions[0].decision == "approved"
+    assert (
+        approval_memory.execute("SELECT COUNT(*) FROM review_decisions").fetchone()[0]
+        == 1
+    )
+    assert (
+        approval_memory.execute("SELECT COUNT(*) FROM address_memory").fetchone()[0]
+        == 1
+    )
+    approval_memory.close()
     with patch.dict(os.environ, {"OLLAMA_API_KEY": "test-key"}):
         configured_ollama = llm_config(
             parser().parse_args(
@@ -5700,6 +6138,7 @@ def friendly_clean(
         llm_batch_size=10,
         llm_timeout=120.0,
         address_threshold=0.84,
+        auto_approve_threshold=DEFAULT_AUTO_APPROVE_THRESHOLD,
         auto_name=True,
         header=False,
         explain=True,
@@ -5893,6 +6332,66 @@ def friendly_learn(results_dir: Path) -> None:
         )
     except (Exception, SystemExit) as exc:
         print(f"The corrections could not be learned: {exc}")
+
+
+def friendly_review_flagged(results_dir: Path) -> None:
+    """Approve provisional corrections without editing TSV files by hand."""
+    print()
+    print("REVIEW AND APPROVE FLAGGED CORRECTIONS")
+    print(
+        "Choose a review_report TSV. AddressMend will find its matching cleaned TSV, "
+        "show each provisional correction and save a new approved copy."
+    )
+    report = friendly_path("Drag or type the REVIEW REPORT here: ")
+    if not report:
+        return
+    prefix = "review_report_"
+    stamp = report.stem[len(prefix) :] if report.stem.startswith(prefix) else ""
+    cleaned = report.with_name(f"cleaned_entries_{stamp}.tsv") if stamp else None
+    if not cleaned or not cleaned.is_file():
+        print("The matching cleaned TSV was not beside that report.")
+        cleaned = friendly_path("Drag or type the CLEANED TSV here: ")
+    if not cleaned:
+        return
+    output_stamp = stamp or datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
+    approved_path = report.with_name(f"approved_entries_{output_stamp}.tsv")
+    decisions_path = report.with_name(f"approval_decisions_{output_stamp}.tsv")
+    memory_path = results_dir / "corrections_and_online_cache.sqlite"
+    memory: sqlite3.Connection | None = None
+    try:
+        records = read_records(str(cleaned))
+        audit = read_audit(str(report))
+        candidate_count = len(flagged_review_candidates(audit))
+        if not candidate_count:
+            print("That report contains no provisional corrections requiring approval.")
+            return
+        print(f"Found {candidate_count} flagged correction(s).")
+        memory = connect_memory(str(memory_path))
+        decisions = review_flagged_corrections(records, audit, memory)
+        write_records(records, str(approved_path))
+        write_review_decisions(decisions, str(decisions_path))
+        route = ""
+        try:
+            route = clipboard_set(approved_path.read_text(encoding="utf-8-sig"))
+        except SystemExit:
+            pass
+        approved = sum(decision.decision == "approved" for decision in decisions)
+        rejected = sum(decision.decision == "rejected" for decision in decisions)
+        skipped = sum(decision.decision == "skipped" for decision in decisions)
+        print()
+        print("APPROVAL REVIEW SAVED")
+        print(f"Approved entries: {approved_path}")
+        print(f"Decision report:  {decisions_path}")
+        print(f"Approved {approved}; kept {rejected}; skipped {skipped}.")
+        if route:
+            print(f"The approved table is on the clipboard through {route}.")
+        else:
+            print("Clipboard copying was unavailable; use the saved approved TSV.")
+    except (Exception, SystemExit) as exc:
+        print(f"The flagged corrections could not be reviewed: {exc}")
+    finally:
+        if memory:
+            memory.close()
 
 
 def validate_user_secret(name: str, value: str) -> str:
@@ -6459,6 +6958,7 @@ def _friendly_menu() -> int:
         )
         print(" 12  Install/configure local Ollama and optional web evidence")
         print(" 13  Enter or replace an API key")
+        print(" 14  Review and approve flagged corrections")
         print("  Q  Close the programme")
         choice = input("\nChoose an option: ").strip().casefold()
         if choice == "1":
@@ -6534,11 +7034,13 @@ def _friendly_menu() -> int:
                 llm_settings = configured
         elif choice == "13":
             friendly_api_key_menu()
+        elif choice == "14":
+            friendly_review_flagged(results_dir)
         elif choice in {"q", "quit", "exit"}:
             print("You may now close this window.")
             return 0
         else:
-            print("Please choose 1 to 13, or Q to close the programme.")
+            print("Please choose 1 to 14, or Q to close the programme.")
         friendly_return_to_menu()
 
 
@@ -6660,6 +7162,15 @@ def parser() -> argparse.ArgumentParser:
         type=float,
         default=0.84,
         help="minimum address match score (default 0.84)",
+    )
+    clean.add_argument(
+        "--auto-approve-threshold",
+        type=float,
+        default=DEFAULT_AUTO_APPROVE_THRESHOLD,
+        help=(
+            "minimum operational evidence ratio for automatic insertion; "
+            "0.99 requires corroboration (default 0.99)"
+        ),
     )
     clean.add_argument(
         "--auto-name",

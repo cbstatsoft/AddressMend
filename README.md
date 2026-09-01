@@ -115,6 +115,13 @@ incomplete; only then does it generate and assess replacements.
    a row-aligned approved batch and stores exact row, person and address
    corrections in the local SQLite memory. Future exact matches are labelled
    `learned`; review suggestions never teach themselves.
+9. **Promote corroborated review candidates.** A review suggestion that preserves
+   every supplied premise identifier and is returned identically by two distinct
+   lookup families receives an operational evidence ratio of `0.99` and is
+   inserted automatically by default. A structurally safe single-source candidate
+   is the `0.95` tier and remains for approval unless the operator deliberately
+   lowers `--auto-approve-threshold` to `0.95`. Competing candidates always block
+   promotion.
 
 The evidence used for each field is deliberately different:
 
@@ -136,6 +143,9 @@ Results are written to `Documents/AddressMend`:
 
 - `cleaned_entries_<date-time>.tsv` — cleaned six-column output;
 - `review_report_<date-time>.tsv` — field-level explanations and review flags;
+- `approved_entries_<date-time>.tsv` — a new completed table produced by desktop
+  option **14** after approving flagged corrections;
+- `approval_decisions_<date-time>.tsv` — the corresponding approve/keep/skip log;
 - `corrections_and_online_cache.sqlite` — approved corrections and cached
   lookups;
 - `uk_addresses.sqlite` — optional offline address/postcode index.
@@ -194,6 +204,60 @@ Confidence labels in the review report have specific meanings:
 
 Always inspect `review` and `unresolved` items before relying on the output.
 
+### Automatic insertion threshold
+
+AddressMend distinguishes a match score from a probability. `--address-threshold`
+controls candidate retrieval and string agreement; it does **not** mean that a
+candidate has that probability of being correct. The separate
+`--auto-approve-threshold` controls promotion of otherwise provisional address
+suggestions:
+
+| Setting | Automatic behaviour | Recommended use |
+| --- | --- | --- |
+| `0.99` (default) | Requires exact agreement from at least two lookup families, a valid postcode, no competing candidate and exact preservation of supplied premise identifiers. | Normal batches; minimizes manual review by corroborating evidence without accepting single-source guesses. |
+| `0.95` | Also permits one structurally safe lookup family to promote its sole candidate. | Only after measuring at least 99% precision on representative approved AddressMend batches; the programme prints a warning. |
+| Above `0.99` | Leaves even two-source candidates for approval. | Especially costly or sensitive data. |
+
+The familiar statistical convention of a 95% confidence interval is not the
+same as accepting a record with a 95% estimated match probability. If the latter
+were calibrated literally, about one in twenty silent insertions could be wrong.
+AddressMend therefore defaults to the 0.99 evidence tier. This is an operational
+policy, not a universal probability claim: approve/reject decisions are stored in
+the local correction database so observed precision can be measured and the
+threshold calibrated on representative data.
+
+The policy follows official record-linkage practice: use deterministic matching
+first, calculate thresholds on labelled records, keep an ambiguous band for
+clerical review, and tune thresholds to the consequences of false matches. See
+the [ONS guidance on linkage thresholds and clerical review](https://www.ons.gov.uk/methodology/methodologicalpublications/generalmethodology/onsworkingpaperseries/developingstandardtoolsfordatalinkagefebruary2021).
+ONS Census 2021 linkage targeted at least 99.90% precision while achieving
+automatic match rates above 93%, illustrating why high precision need not imply
+reviewing most records: [Census 2021 linkage methods](https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/methodologies/linkagemethodsforcensus2021inenglandandwales).
+For address lookup specifically, ONS describes parsing and comparing address
+components, using word and bigram evidence, retaining an unstructured fallback,
+and applying a stricter decision stage after broad candidate retrieval:
+[Using data science for the Address Matching Service](https://www.ons.gov.uk/methodology/methodologicalpublications/generalmethodology/onsworkingpaperseries/onsworkingpaperseriesno17usingdatasciencefortheaddressmatchingservice).
+Where licensed authoritative data is available, retaining a stable identifier is
+preferable to repeatedly fuzzy-matching text; GeoPlace describes the UPRN as the
+unique identifier for every UK addressable location:
+[GeoPlace UPRN guidance](https://www.geoplace.co.uk/addresses-streets/location-data/the-uprn).
+
+### Approving flagged corrections in the programme
+
+Choose desktop option **14**, then drag in a `review_report_…tsv`. AddressMend
+finds the matching `cleaned_entries_…tsv` in the same folder and shows each
+provisional correction with its current value, suggestion and evidence. Choose:
+
+- **A** to approve and insert the suggestion;
+- **K** to reject it and retain the current value;
+- **S** to leave it undecided for later;
+- **Q** to finish and save decisions made so far.
+
+The original files are never overwritten. The new approved TSV is copied to the
+clipboard, and address approvals plus all approve/reject/skip outcomes are stored
+locally. This makes repeated corrections reusable and provides calibration data
+without allowing provisional suggestions to teach themselves.
+
 ## How address harmonisation works
 
 The cleaner does not contain person-specific or address-specific `if` rules.
@@ -224,6 +288,11 @@ It applies reusable evidence rules:
    changes remain `review` suggestions without changing the cleaned TSV.
 9. Retain and flag the supplied value when evidence conflicts or the address
    remains incomplete.
+10. Before leaving a candidate for review, compare provisional results from the
+    offline index, Doogal, Homedata, getAddress.io and Nominatim. Promote only one
+    exact, premise-preserving candidate at the configured evidence tier; an LLM
+    is not counted as an independent source because it may be restating lookup
+    evidence supplied in its prompt.
 
 This detector-then-corrector split prevents a plausible lookup from rewriting a
 field that was not demonstrably incomplete. Numeric confidence labels for the
