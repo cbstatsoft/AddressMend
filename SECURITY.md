@@ -3,7 +3,7 @@
 ## Supported version
 
 Security and privacy fixes are applied to the latest release of AddressMend.
-At present that is version 1.3.x.
+At present that is version 1.6.x.
 
 ## Reporting a vulnerability
 
@@ -34,6 +34,9 @@ issue.
   the configured endpoint. Use loopback Ollama when records must remain local.
 - Remember that the local LLM cache can contain names, addresses and email
   addresses even though its lookup key is hashed.
+- The correction-memory SQLite database and `approval_decisions_…tsv` files can
+  contain current and suggested addresses plus the operator's decisions. Treat
+  them as contact data and do not attach them to public issues or commits.
 - Treat third-party address results as evidence, not guaranteed truth.
 - Confirm substantive address, postcode, name and email suggestions before
   approving them into correction memory; review-only candidates do not alter
