@@ -33,6 +33,8 @@ and LibreOffice Calc.
   sending the contact's name or email address.
 - Optionally send only unresolved rows to OpenAI, another OpenAI-compatible API
   or a local Ollama model for a constrained second-stage review.
+- Enter and persist OpenAI or Ollama web-search keys through hidden guided
+  prompts on Windows, macOS or Linux.
 - Mark uncertain suggestions for review instead of silently presenting guesses
   as facts.
 - Copy the completed TSV to the native Windows, macOS, Wayland or X11 clipboard
@@ -294,11 +296,12 @@ Desktop users can select menu option **10** to configure a provider. Option
 Windows Package Manager with confirmation when available, and downloads the
 chosen model with confirmation. Before downloading, it runs `ollama list`, shows
 already-installed models from known general-purpose reviewer families and prefers
-a suitable installed model. On Windows, the OpenAI option can accept the key
-through a hidden prompt and persist
-`OPENAI_API_KEY` for the current user through PowerShell `setx`. AddressMend also
-loads it into the current process, so no restart is needed. On other platforms,
-set the environment variable before starting the programme.
+a suitable installed model. Option **13** directly enters or replaces OpenAI,
+Ollama web-search, getAddress.io or custom provider keys. On Windows, macOS and
+Linux, key entry uses a hidden prompt and makes the value available to the
+current run immediately. Windows persists it for the current user through
+PowerShell `setx`. macOS and Linux persist it in an owner-only AddressMend
+configuration file which the programme loads automatically on future starts.
 
 | Provider | API used | Defaults |
 | --- | --- | --- |
@@ -353,8 +356,8 @@ instruct the model or bypass AddressMend's local validation gates. A web-search
 failure simply falls back to the local Ollama review.
 
 Remote endpoints must use HTTPS; unencrypted HTTP is accepted only for a
-loopback address. API keys are read from environment variables and are never
-written to the audit or cache. When `--memory` is supplied, the request is
+loopback address. API keys are never written to the audit or cache. When
+`--memory` is supplied, the request is
 identified in SQLite by a hash and the structured result is cached to avoid
 repeat cost; the cached proposal can itself contain personal data. Local Ollama
 keeps the request on the computer only when its base URL is loopback. Any other
@@ -367,6 +370,16 @@ or `setx OLLAMA_API_KEY` had been run manually. They are not written to
 AddressMend's files, but remain retrievable by programmes running under that Windows
 account. Entry is hidden and passed to PowerShell through standard input, rather
 than being placed in the AddressMend command line or shell history.
+
+On macOS, guided keys are stored in
+`~/Library/Application Support/AddressMend/api_keys.json`. On Linux and other
+POSIX systems they are stored in
+`${XDG_CONFIG_HOME:-~/.config}/addressmend/api_keys.json`. AddressMend creates the
+directory with mode `0700` and the JSON file with mode `0600`, writes updates
+atomically, and refuses to load a file accessible by group or other users. An
+environment variable set before launch takes precedence over the saved value.
+The file is plain text and remains readable by software running as the same OS
+user; delete it to remove all AddressMend-saved keys.
 
 The API has no access to this project's previous ChatGPT conversations or
 ChatGPT memory. Reuse approved results through AddressMend's explicit `learn`

@@ -4955,6 +4955,35 @@ def self_test() -> int:
     previous_openai_key = os.environ.pop("OPENAI_API_KEY", None)
     previous_ollama_key = os.environ.pop("OLLAMA_API_KEY", None)
     try:
+        with tempfile.TemporaryDirectory() as secret_directory:
+            secret_path = Path(secret_directory) / "addressmend" / "api_keys.json"
+            persist_posix_user_secret(
+                "OPENAI_API_KEY", "sk-posix-test", secret_path
+            )
+            persist_posix_user_secret(
+                "OLLAMA_API_KEY", "ollama-posix-test", secret_path
+            )
+            assert secret_path.stat().st_mode & 0o777 == 0o600
+            assert secret_path.parent.stat().st_mode & 0o777 == 0o700
+            assert read_user_secrets(secret_path) == {
+                "OLLAMA_API_KEY": "ollama-posix-test",
+                "OPENAI_API_KEY": "sk-posix-test",
+            }
+            os.chmod(secret_path, 0o644)
+            try:
+                read_user_secrets(secret_path)
+            except RuntimeError as exc:
+                assert "chmod 600" in str(exc)
+            else:
+                raise AssertionError("an API-key file with unsafe permissions was loaded")
+            os.chmod(secret_path, 0o600)
+            os.environ.pop("OPENAI_API_KEY")
+            os.environ.pop("OLLAMA_API_KEY")
+            os.environ["OPENAI_API_KEY"] = "explicit-environment-key"
+            assert load_persisted_user_secrets(secret_path) == ["OLLAMA_API_KEY"]
+            assert os.environ["OPENAI_API_KEY"] == "explicit-environment-key"
+            assert os.environ["OLLAMA_API_KEY"] == "ollama-posix-test"
+
         fake_process = subprocess.CompletedProcess([], 0, "", "")
         with (
             patch.object(os, "name", "nt"),
@@ -5727,15 +5756,111 @@ def friendly_learn(results_dir: Path) -> None:
         print(f"The corrections could not be learned: {exc}")
 
 
-def persist_windows_user_secret(name: str, value: str) -> None:
-    """Persist one validated secret for the Windows user through PowerShell/setx."""
-    if os.name != "nt":
-        raise RuntimeError("automatic API-key storage is available only on Windows")
+def validate_user_secret(name: str, value: str) -> str:
+    """Validate a key name/value without ever including the value in an error."""
     if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", name):
         raise RuntimeError("the environment-variable name was invalid")
     value = value.strip()
     if not value or len(value) > 2048 or any(c in value for c in "\r\n\0"):
         raise RuntimeError("the API key was empty or contained invalid characters")
+    return value
+
+
+def user_secrets_path() -> Path:
+    """Return AddressMend's private key file on macOS or other POSIX systems."""
+    if sys.platform == "darwin":
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "AddressMend"
+            / "api_keys.json"
+        )
+    configured = os.environ.get("XDG_CONFIG_HOME", "")
+    base = Path(configured).expanduser() if configured else Path.home() / ".config"
+    if not base.is_absolute():
+        base = Path.home() / ".config"
+    return base / "addressmend" / "api_keys.json"
+
+
+def read_user_secrets(path: Path | None = None) -> dict[str, str]:
+    """Read valid saved keys, refusing a file accessible by another user."""
+    path = path or user_secrets_path()
+    if not path.is_file():
+        return {}
+    try:
+        if path.stat().st_mode & 0o077:
+            raise RuntimeError(
+                f"saved API keys have unsafe permissions at {path}; run chmod 600 on it"
+            )
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except RuntimeError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"saved API keys could not be read from {path}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"saved API keys had an invalid format at {path}")
+    secrets: dict[str, str] = {}
+    for name, value in payload.items():
+        if not isinstance(name, str) or not isinstance(value, str):
+            continue
+        try:
+            secrets[name] = validate_user_secret(name, value)
+        except RuntimeError:
+            continue
+    return secrets
+
+
+def persist_posix_user_secret(
+    name: str, value: str, path: Path | None = None
+) -> None:
+    """Atomically store one key in an owner-only macOS/Linux JSON file."""
+    value = validate_user_secret(name, value)
+    path = path or user_secrets_path()
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(path.parent, 0o700)
+        secrets = read_user_secrets(path)
+        secrets[name] = value
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".api_keys-", suffix=".tmp", dir=path.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            os.chmod(temporary, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(secrets, stream, ensure_ascii=False, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            os.chmod(path, 0o600)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except RuntimeError:
+        raise
+    except OSError as exc:
+        raise RuntimeError(f"the API key could not be saved at {path}") from exc
+    os.environ[name] = value
+
+
+def load_persisted_user_secrets(path: Path | None = None) -> list[str]:
+    """Load saved macOS/Linux keys without overriding explicit environment values."""
+    if os.name == "nt":
+        return []
+    loaded: list[str] = []
+    for name, value in read_user_secrets(path).items():
+        if name not in os.environ:
+            os.environ[name] = value
+            loaded.append(name)
+    return loaded
+
+
+def persist_windows_user_secret(name: str, value: str) -> None:
+    """Persist one validated secret for the Windows user through PowerShell/setx."""
+    if os.name != "nt":
+        raise RuntimeError("automatic API-key storage is available only on Windows")
+    value = validate_user_secret(name, value)
     powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
     if not powershell:
         raise RuntimeError("PowerShell was not found")
@@ -5780,42 +5905,70 @@ def persist_windows_ollama_key(value: str) -> None:
     persist_windows_user_secret("OLLAMA_API_KEY", value)
 
 
+def persist_user_secret(name: str, value: str) -> None:
+    """Persist a key through setx on Windows or a private file elsewhere."""
+    if os.name == "nt":
+        persist_windows_user_secret(name, value)
+    else:
+        persist_posix_user_secret(name, value)
+
+
 def friendly_enter_openai_key() -> bool:
-    """Prompt without echoing and save the key for the current Windows user."""
-    if os.name != "nt":
-        print("Automatic key entry is currently available only on Windows.")
-        return False
+    """Prompt without echoing and save the key for the current OS user."""
+    return friendly_enter_api_key("OPENAI_API_KEY", "OpenAI")
+
+
+def friendly_enter_api_key(name: str, label: str) -> bool:
+    """Prompt without echoing and persist one named provider key."""
     try:
-        value = getpass.getpass("Paste the OpenAI API key (input hidden): ")
+        validate_user_secret(name, "placeholder")
+        value = getpass.getpass(f"Paste the {label} API key (input hidden): ")
     except (EOFError, KeyboardInterrupt):
         print("No key was saved.")
         return False
-    try:
-        persist_windows_openai_key(value)
     except RuntimeError as exc:
         print(f"The key could not be saved: {exc}")
         return False
-    print("The key was saved for your Windows account and is ready to use now.")
+    try:
+        persist_user_secret(name, value)
+    except RuntimeError as exc:
+        print(f"The key could not be saved: {exc}")
+        return False
+    print(f"{name} was saved for your user account and is ready to use now.")
     return True
 
 
 def friendly_enter_ollama_key() -> bool:
-    """Prompt without echoing and save the Ollama web-search key on Windows."""
-    if os.name != "nt":
-        print("Set OLLAMA_API_KEY before starting AddressMend on this platform.")
-        return False
-    try:
-        value = getpass.getpass("Paste the Ollama API key (input hidden): ")
-    except (EOFError, KeyboardInterrupt):
-        print("No key was saved.")
-        return False
-    try:
-        persist_windows_ollama_key(value)
-    except RuntimeError as exc:
-        print(f"The key could not be saved: {exc}")
-        return False
-    print("The Ollama web-search key was saved and is ready to use now.")
-    return True
+    """Prompt without echoing and save the Ollama key for the current OS user."""
+    return friendly_enter_api_key("OLLAMA_API_KEY", "Ollama web-search")
+
+
+def friendly_api_key_menu() -> None:
+    """Offer provider-neutral hidden API-key entry on every supported OS."""
+    print()
+    print("MANAGE API KEYS")
+    print("Keys are hidden while you type and saved only for your OS user.")
+    print("  1  OpenAI API")
+    print("  2  Ollama hosted web search")
+    print("  3  getAddress.io")
+    print("  4  Other provider/environment-variable name")
+    print("  B  Back without changing a key")
+    choice = input("Choose an option: ").strip().casefold()
+    known = {
+        "1": ("OPENAI_API_KEY", "OpenAI"),
+        "2": ("OLLAMA_API_KEY", "Ollama web-search"),
+        "3": ("GETADDRESS_API_KEY", "getAddress.io"),
+    }
+    if choice == "b":
+        return
+    selected = known.get(choice)
+    if choice == "4":
+        name = input("Environment-variable name (for example LLM_API_KEY): ").strip()
+        selected = (name, "provider")
+    if not selected:
+        print("That was not a valid choice, so no key was changed.")
+        return
+    friendly_enter_api_key(*selected)
 
 
 def system_memory_gib() -> float | None:
@@ -5957,7 +6110,7 @@ def friendly_ollama_web_search() -> bool:
         return True
     print("This optional service requires a free Ollama account and OLLAMA_API_KEY.")
     print("Create a key at: https://ollama.com/settings/keys")
-    if os.name == "nt" and friendly_yes_no("Enter and save the Ollama key now?"):
+    if friendly_yes_no("Enter and save the Ollama key now?"):
         return friendly_enter_ollama_key()
     print("No web-search key is available; the local Ollama reviewer will still work.")
     return False
@@ -6063,7 +6216,7 @@ def friendly_llm_configuration() -> dict[str, object] | None:
         return None
     if choice == "1":
         existing_key = bool(os.environ.get("OPENAI_API_KEY"))
-        if existing_key and os.name == "nt":
+        if existing_key:
             if friendly_yes_no("Replace the stored OpenAI API key?"):
                 if not friendly_enter_openai_key():
                     print("The existing key was not changed and remains available.")
@@ -6166,6 +6319,7 @@ def _friendly_menu() -> int:
             f"(currently {'ON' if homedata else 'OFF'})"
         )
         print(" 12  Install/configure local Ollama and optional web evidence")
+        print(" 13  Enter or replace an API key")
         print("  Q  Close the programme")
         choice = input("\nChoose an option: ").strip().casefold()
         if choice == "1":
@@ -6239,11 +6393,13 @@ def _friendly_menu() -> int:
             configured = friendly_setup_ollama()
             if configured:
                 llm_settings = configured
+        elif choice == "13":
+            friendly_api_key_menu()
         elif choice in {"q", "quit", "exit"}:
             print("You may now close this window.")
             return 0
         else:
-            print("Please choose 1 to 12, or Q to close the programme.")
+            print("Please choose 1 to 13, or Q to close the programme.")
         friendly_return_to_menu()
 
 
@@ -6476,6 +6632,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    try:
+        load_persisted_user_secrets()
+    except RuntimeError as exc:
+        print(f"AddressMend could not load saved API keys: {exc}", file=sys.stderr)
     if argv is None and len(sys.argv) == 1:
         try:
             return friendly_menu()
