@@ -21,6 +21,8 @@ and LibreOffice Calc.
 - Paste a Markdown table directly into the friendly desktop menu.
 - Wrap desktop-menu prompts and job-output logs to the live terminal width,
   including after the window is resized.
+- Show separate window-aware progress bars for deterministic cleaning and
+  optional LLM review.
 - Read six-column Markdown, TSV and CSV files without installing packages.
 - Preserve the original row order and six output columns.
 - Repair postcode spacing, Markdown email wrappers and conservative OCR errors.
@@ -164,6 +166,14 @@ a hanging indent. Paths and URLs are kept as indivisible text so copying them
 does not introduce false spaces. This affects only the interactive desktop
 display; TSV files, audit files, redirected command output and clipboard data
 are not reformatted.
+
+Desktop batches show progress automatically. Because the desktop procedure also
+explains individual decisions, its job log records a progress bar at 5% milestones
+instead of repeatedly overwriting explanation lines. A quiet interactive CLI run
+uses a single updating line. CLI progress is opt-in with `--progress`; when its
+standard error is redirected, milestone bars are written as ordinary log lines.
+Cleaning and LLM review have separate bars because the second stage can involve
+multiple provider requests after deterministic processing reaches 100%.
 
 On first use, AddressMend tries to rename an existing `AddressMend Results`,
 `UK Address Harmoniser Results` or `UK Address Cleaner Results` folder to the new
