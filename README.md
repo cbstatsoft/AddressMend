@@ -19,6 +19,8 @@ and LibreOffice Calc.
 ## Features
 
 - Paste a Markdown table directly into the friendly desktop menu.
+- Wrap desktop-menu prompts and job-output logs to the live terminal width,
+  including after the window is resized.
 - Read six-column Markdown, TSV and CSV files without installing packages.
 - Preserve the original row order and six output columns.
 - Repair postcode spacing, Markdown email wrappers and conservative OCR errors.
@@ -152,6 +154,14 @@ those rows were automatically changed, retained only as review suggestions, or
 left without a usable change. Rows that received both deterministic work and a
 final LLM completion are attributed to the LLM, so the five main categories do
 not double-count rows.
+
+The friendly desktop menu measures the console width for every completed output
+line. Long explanations and job-log entries therefore wrap to the visible
+window, and subsequent output adapts after a resize. Indented menu items retain
+a hanging indent. Paths and URLs are kept as indivisible text so copying them
+does not introduce false spaces. This affects only the interactive desktop
+display; TSV files, audit files, redirected command output and clipboard data
+are not reformatted.
 
 On first use, AddressMend tries to rename an existing `AddressMend Results`,
 `UK Address Harmoniser Results` or `UK Address Cleaner Results` folder to the new
