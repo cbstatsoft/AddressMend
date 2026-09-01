@@ -3513,6 +3513,7 @@ def apply_llm_fallback(
     config: LLMConfig,
     quiet: bool,
     explain: bool = False,
+    progress: bool = False,
 ) -> LLMRunStats:
     requests = llm_issues(output, audit)
     if not requests:
@@ -3529,12 +3530,21 @@ def apply_llm_fallback(
         )
     automatically_changed: set[int] = set()
     held_for_review: set[int] = set()
+    llm_progress = ProgressBar(
+        "LLM review", len(requests), progress, explain, stream=sys.stderr
+    )
+    llm_progress.__enter__()
     for start in range(0, len(requests), config.batch_size):
         batch = requests[start : start + config.batch_size]
-        llm_batch = augment_ollama_web_evidence(batch, memory, config, quiet)
-        result = cached_llm_result(memory, config, llm_batch)
+        try:
+            llm_batch = augment_ollama_web_evidence(batch, memory, config, quiet)
+            result = cached_llm_result(memory, config, llm_batch)
+        except BaseException:
+            llm_progress.close()
+            raise
         result_rows = result.get("rows")
         if not isinstance(result_rows, list):
+            llm_progress.close()
             raise RuntimeError("cached LLM result did not match the required shape")
         seen_rows: set[int] = set()
         for item in result_rows:
@@ -3639,6 +3649,8 @@ def apply_llm_fallback(
                             f"{current!r} -> {value!r} for review ({held_reason})",
                             file=sys.stderr,
                         )
+        llm_progress.update(min(start + len(batch), len(requests)))
+    llm_progress.finish()
     review_only = held_for_review - automatically_changed
     no_change = set(allowed) - automatically_changed - held_for_review
     return LLMRunStats(
@@ -3770,36 +3782,46 @@ def clean_records_with_resources(
 
     explain_active_sources(args, len(raw_records), memory, api_key)
 
-    for row_number, raw in enumerate(raw_records, 1):
-        audit_start = len(audit)
-        override = load_override(memory, raw)
-        if override:
-            output.append(override)
-            for field, old, new in zip(FIELD_NAMES, raw.values(), override.values()):
-                add_change(
-                    audit,
-                    row_number,
-                    field,
-                    old,
-                    new,
-                    "learned",
-                    "exact approved-row memory",
-                )
-            if getattr(args, "validate_email_domains", False):
-                audit_uncommon_email_domain(override, row_number, audit, memory)
-            explain_row(args, row_number, override, audit[audit_start:])
-            continue
+    with ProgressBar(
+        "Cleaning",
+        len(raw_records),
+        getattr(args, "progress", False),
+        getattr(args, "explain", False),
+    ) as progress:
+        for row_number, raw in enumerate(raw_records, 1):
+            audit_start = len(audit)
+            override = load_override(memory, raw)
+            if override:
+                output.append(override)
+                for field, old, new in zip(
+                    FIELD_NAMES, raw.values(), override.values()
+                ):
+                    add_change(
+                        audit,
+                        row_number,
+                        field,
+                        old,
+                        new,
+                        "learned",
+                        "exact approved-row memory",
+                    )
+                if getattr(args, "validate_email_domains", False):
+                    audit_uncommon_email_domain(override, row_number, audit, memory)
+                explain_row(args, row_number, override, audit[audit_start:])
+                progress.update(row_number)
+                continue
 
-        record = basic_clean(raw, row_number, audit, args.auto_name)
-        record = apply_person_memory(record, row_number, audit, memory)
-        if getattr(args, "validate_email_domains", False):
-            audit_uncommon_email_domain(record, row_number, audit, memory)
-        record = apply_address_lookups(
-            raw, record, row_number, audit, args, memory, index, api_key
-        )
-        add_record_review_flags(raw, record, row_number, audit)
-        output.append(record)
-        explain_row(args, row_number, record, audit[audit_start:])
+            record = basic_clean(raw, row_number, audit, args.auto_name)
+            record = apply_person_memory(record, row_number, audit, memory)
+            if getattr(args, "validate_email_domains", False):
+                audit_uncommon_email_domain(record, row_number, audit, memory)
+            record = apply_address_lookups(
+                raw, record, row_number, audit, args, memory, index, api_key
+            )
+            add_record_review_flags(raw, record, row_number, audit)
+            output.append(record)
+            explain_row(args, row_number, record, audit[audit_start:])
+            progress.update(row_number)
 
     llm_stats = LLMRunStats()
     if llm:
@@ -3812,6 +3834,7 @@ def clean_records_with_resources(
                 llm,
                 args.quiet,
                 getattr(args, "explain", False),
+                getattr(args, "progress", False),
             )
             if isinstance(completed_stats, LLMRunStats):
                 llm_stats = completed_stats
@@ -4400,6 +4423,26 @@ def self_test() -> int:
         return_value=os.terminal_size((42, 20)),
     ):
         assert window_rule() == "=" * 41
+    half_bar = progress_bar_line("Cleaning", 50, 100, 42)
+    assert len(half_bar) <= 41 and "50%" in half_bar and "50/100" in half_bar
+    assert len(progress_bar_line("Cleaning", 50, 100, 20)) <= 19
+    progress_log = io.StringIO()
+    with ProgressBar("Cleaning", 10, True, True, progress_log) as progress:
+        progress.update(1)
+        progress.update(5)
+        progress.update(10)
+    assert progress_log.getvalue().count("Cleaning") == 4
+
+    class TTYLog(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    transient_log = TTYLog()
+    with ProgressBar("Cleaning", 2, True, False, transient_log) as progress:
+        progress.update(1, force=True)
+        progress.update(2, force=True)
+    assert transient_log.getvalue().startswith("\rCleaning")
+    assert transient_log.getvalue().endswith("\n")
 
     sample = """| Mrs | Casey | Cadozo | 60 | hp227dj | [casey.cardozo@example.org](mailto\\:casey.cardozo@example.org) |
 | --- | --- | --- | --- | --- | --- |
@@ -5298,6 +5341,101 @@ class WindowAwareTextWriter:
         return getattr(self.target, "errors", None)
 
 
+def progress_bar_line(
+    label: str, current: int, total: int, columns: int | None = None
+) -> str:
+    """Render one ASCII progress bar that fits the current terminal width."""
+    current = max(0, min(current, total)) if total > 0 else 0
+    ratio = current / total if total else 1.0
+    percent = int(ratio * 100)
+    if columns is None:
+        columns = shutil.get_terminal_size(fallback=(100, 24)).columns
+    width = max(20, columns - 1)
+    prefix = f"{label} "
+    suffix = f" {percent:3d}% ({current}/{total})"
+    bar_width = width - len(prefix) - len(suffix) - 2
+    if bar_width < 5:
+        compact = f"{label}: {percent}% ({current}/{total})"
+        return compact if len(compact) <= width else f"{percent}% {current}/{total}"
+    complete = min(bar_width, int(bar_width * ratio))
+    return f"{prefix}[{'#' * complete}{'-' * (bar_width - complete)}]{suffix}"
+
+
+class ProgressBar:
+    """Report live progress without making verbose job logs unreadable."""
+
+    def __init__(
+        self,
+        label: str,
+        total: int,
+        enabled: bool,
+        verbose: bool,
+        stream: TextIO | None = None,
+    ):
+        self.label = label
+        self.total = max(0, total)
+        self.enabled = enabled
+        self.stream = stream or sys.stderr
+        self.transient = bool(not verbose and self.stream.isatty())
+        self.last_bucket = -1
+        self.last_emit = 0.0
+        self.previous_length = 0
+        self.last_current = -1
+        self.finished = False
+
+    def __enter__(self) -> ProgressBar:
+        self.update(0, force=True)
+        return self
+
+    def update(self, current: int, force: bool = False) -> None:
+        if not self.enabled or self.finished:
+            return
+        current = max(0, min(current, self.total)) if self.total else 0
+        percent = int(current / self.total * 100) if self.total else 100
+        bucket = percent // 5
+        now = time.monotonic()
+        if not force:
+            if self.transient:
+                if percent == self.last_bucket and now - self.last_emit < 0.10:
+                    return
+            elif bucket == self.last_bucket and now - self.last_emit < 10.0:
+                return
+        line = progress_bar_line(self.label, current, self.total)
+        if self.transient:
+            padding = " " * max(0, self.previous_length - len(line))
+            self.stream.write("\r" + line + padding)
+            self.stream.flush()
+            self.previous_length = len(line)
+            self.last_bucket = percent
+        else:
+            print(line, file=self.stream)
+            self.last_bucket = bucket
+        self.last_emit = now
+        self.last_current = current
+
+    def finish(self) -> None:
+        if not self.enabled or self.finished:
+            return
+        if self.last_current != self.total:
+            self.update(self.total, force=True)
+        if self.transient:
+            self.stream.write("\n")
+            self.stream.flush()
+        self.finished = True
+
+    def close(self) -> None:
+        if self.enabled and self.transient and not self.finished:
+            self.stream.write("\n")
+            self.stream.flush()
+        self.finished = True
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        if exc_type is None:
+            self.finish()
+        else:
+            self.close()
+
+
 @contextmanager
 def friendly_output_wrapping() -> Iterator[None]:
     """Wrap desktop-menu output while leaving normal CLI streams untouched."""
@@ -5565,6 +5703,7 @@ def friendly_clean(
         auto_name=True,
         header=False,
         explain=True,
+        progress=True,
         quiet=False,
         fail_on_unresolved=False,
     )
@@ -6535,7 +6674,15 @@ def parser() -> argparse.ArgumentParser:
         help="explain every row and decision on stderr",
     )
     clean.add_argument(
-        "--quiet", action="store_true", help="suppress progress/explanations on stderr"
+        "--progress",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="show cleaning and LLM-review progress bars (default off in CLI)",
+    )
+    clean.add_argument(
+        "--quiet",
+        action="store_true",
+        help="suppress ordinary status and explanations (not explicit --progress)",
     )
     clean.add_argument(
         "--fail-on-unresolved",
