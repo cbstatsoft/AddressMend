@@ -97,6 +97,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import unicodedata
 import urllib.error
@@ -104,10 +105,11 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Iterator, Sequence
+from typing import Iterable, Iterator, Sequence, TextIO
 
 VERSION = "1.5.0"
 COPYRIGHT = "Copyright (C) 2026 Connor Baird"
@@ -4377,6 +4379,28 @@ def download_command(args: argparse.Namespace) -> int:
 def self_test() -> int:
     from unittest.mock import patch
 
+    log_line = "Job output: checking a deliberately long unresolved address record"
+    narrow_log = window_wrap_line(log_line, 28)
+    wide_log = window_wrap_line(log_line, 72)
+    assert len(narrow_log.splitlines()) > len(wide_log.splitlines())
+    assert all(len(line) <= 27 for line in narrow_log.splitlines())
+    long_url = "https://example.test/" + "address-evidence-" * 4
+    assert long_url in window_wrap_line(f"Evidence: {long_url}", 30)
+    wrapped_log = io.StringIO()
+    writer = WindowAwareTextWriter(wrapped_log)
+    with patch(
+        __name__ + ".shutil.get_terminal_size",
+        side_effect=[os.terminal_size((28, 20)), os.terminal_size((72, 20))],
+    ):
+        writer.write(log_line + "\n")
+        writer.write(log_line + "\n")
+    assert wrapped_log.getvalue() == narrow_log + "\n" + wide_log + "\n"
+    with patch(
+        __name__ + ".shutil.get_terminal_size",
+        return_value=os.terminal_size((42, 20)),
+    ):
+        assert window_rule() == "=" * 41
+
     sample = """| Mrs | Casey | Cadozo | 60 | hp227dj | [casey.cardozo@example.org](mailto\\:casey.cardozo@example.org) |
 | --- | --- | --- | --- | --- | --- |
 | Mr | Alex | Exemple | 18 | HP21 7HY | alex.example@example.org |
@@ -5163,6 +5187,104 @@ def doctor(args: argparse.Namespace) -> int:
     )
     print("  Next step: use the desktop menu, or run 'addressmend.py resources'.")
     return 0 if version_ok else 1
+
+
+def window_wrap_line(value: str, columns: int | None = None) -> str:
+    """Wrap one friendly-menu/log line to the terminal's current width.
+
+    Long indivisible values such as paths and URLs remain intact so copying
+    them from the job log does not introduce false whitespace.
+    """
+    if not value or not value.strip():
+        return value
+    if columns is None:
+        columns = shutil.get_terminal_size(fallback=(100, 24)).columns
+    width = max(20, columns - 1)
+    if len(value.expandtabs()) <= width:
+        return value
+    leading = re.match(r"^\s*", value).group(0)
+    item = re.match(r"^(\s*(?:(?:\d+|[A-Za-z])\s{2,}|[-*]\s+))", value)
+    subsequent = " " * len(item.group(1)) if item else leading
+    if len(subsequent) >= width - 8:
+        subsequent = leading[: max(0, width - 8)]
+    return "\n".join(
+        textwrap.wrap(
+            value[len(leading) :],
+            width=width,
+            initial_indent=leading,
+            subsequent_indent=subsequent,
+            break_long_words=False,
+            break_on_hyphens=False,
+            replace_whitespace=False,
+            drop_whitespace=True,
+        )
+    )
+
+
+def window_rule(character: str = "=", maximum: int = 64) -> str:
+    """Return a menu divider that fits the terminal without hard wrapping."""
+    columns = shutil.get_terminal_size(fallback=(100, 24)).columns
+    return character * min(maximum, max(20, columns - 1))
+
+
+class WindowAwareTextWriter:
+    """Line-buffering proxy that rechecks terminal width after every resize."""
+
+    def __init__(self, target: TextIO):
+        self.target = target
+        self.pending = ""
+
+    def write(self, value: str) -> int:
+        consumed = len(value)
+        self.pending += value
+        while "\n" in self.pending:
+            line, self.pending = self.pending.split("\n", 1)
+            self.target.write(window_wrap_line(line) + "\n")
+        # Preserve carriage-return progress indicators produced by downloads or
+        # model runners rather than turning every refresh into another line.
+        if "\r" in self.pending:
+            self.target.write(self.pending)
+            self.pending = ""
+        return consumed
+
+    def flush(self) -> None:
+        if self.pending:
+            self.target.write(window_wrap_line(self.pending))
+            self.pending = ""
+        self.target.flush()
+
+    def isatty(self) -> bool:
+        method = getattr(self.target, "isatty", None)
+        return bool(method and method())
+
+    def fileno(self) -> int:
+        return self.target.fileno()
+
+    @property
+    def encoding(self) -> str | None:
+        return getattr(self.target, "encoding", None)
+
+    @property
+    def errors(self) -> str | None:
+        return getattr(self.target, "errors", None)
+
+
+@contextmanager
+def friendly_output_wrapping() -> Iterator[None]:
+    """Wrap desktop-menu output while leaving normal CLI streams untouched."""
+    if isinstance(sys.stdout, WindowAwareTextWriter):
+        yield
+        return
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+    wrapped_stdout = WindowAwareTextWriter(original_stdout)
+    wrapped_stderr = WindowAwareTextWriter(original_stderr)
+    sys.stdout, sys.stderr = wrapped_stdout, wrapped_stderr  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        wrapped_stdout.flush()
+        wrapped_stderr.flush()
+        sys.stdout, sys.stderr = original_stdout, original_stderr
 
 
 def friendly_yes_no(question: str) -> bool:
@@ -5996,16 +6118,22 @@ def friendly_llm_configuration() -> dict[str, object] | None:
 
 
 def friendly_menu() -> int:
-    """Desktop-oriented menu used when the script has no arguments."""
+    """Run the desktop menu with window-aware prompts and job-log output."""
+    with friendly_output_wrapping():
+        return _friendly_menu()
+
+
+def _friendly_menu() -> int:
+    """Desktop-oriented menu implementation used when the script has no arguments."""
     results_dir = friendly_results_directory()
     online = True
     homedata = True
     llm_settings: dict[str, object] | None = None
     while True:
         print()
-        print("=" * 64)
+        print(window_rule())
         print(f"ADDRESSMEND {VERSION}")
-        print("=" * 64)
+        print(window_rule())
         print(COPYRIGHT)
         print("Licensed under GNU GPL version 3 or later.")
         print(
