@@ -3865,6 +3865,8 @@ def apply_llm_fallback(
         if not isinstance(result_rows, list):
             llm_progress.close()
             raise RuntimeError("cached LLM result did not match the required shape")
+        if explain and llm_progress.pinned:
+            llm_progress.clear()
         seen_rows: set[int] = set()
         for item in result_rows:
             if not isinstance(item, dict) or not isinstance(item.get("row"), int):
@@ -3968,7 +3970,9 @@ def apply_llm_fallback(
                             f"{current!r} -> {value!r} for review ({held_reason})",
                             file=sys.stderr,
                         )
-        llm_progress.update(min(start + len(batch), len(requests)))
+        llm_progress.update(
+            min(start + len(batch), len(requests)), force=llm_progress.pinned
+        )
     llm_progress.finish()
     review_only = held_for_review - automatically_changed
     no_change = set(allowed) - automatically_changed - held_for_review
@@ -4140,8 +4144,10 @@ def clean_records_with_resources(
                     )
                 if getattr(args, "validate_email_domains", False):
                     audit_uncommon_email_domain(override, row_number, audit, memory)
+                if progress.pinned:
+                    progress.clear()
                 explain_row(args, row_number, override, audit[audit_start:])
-                progress.update(row_number)
+                progress.update(row_number, force=progress.pinned)
                 continue
 
             record = basic_clean(raw, row_number, audit, args.auto_name)
@@ -4153,8 +4159,10 @@ def clean_records_with_resources(
             )
             add_record_review_flags(raw, record, row_number, audit)
             output.append(record)
+            if progress.pinned:
+                progress.clear()
             explain_row(args, row_number, record, audit[audit_start:])
-            progress.update(row_number)
+            progress.update(row_number, force=progress.pinned)
 
     llm_stats = LLMRunStats()
     if llm:
@@ -4776,6 +4784,16 @@ def self_test() -> int:
         progress.update(2, force=True)
     assert transient_log.getvalue().startswith("\rCleaning")
     assert transient_log.getvalue().endswith("\n")
+
+    pinned_log = TTYLog()
+    with ProgressBar("Cleaning", 2, True, True, pinned_log) as progress:
+        assert progress.pinned
+        progress.clear()
+        print("row 1 explanation", file=pinned_log)
+        progress.update(1, force=True)
+    pinned_output = pinned_log.getvalue()
+    assert "row 1 explanation\n\rCleaning" in pinned_output
+    assert pinned_output.endswith("\n")
 
     sample = """| Mrs | Casey | Cadozo | 60 | hp227dj | [casey.cardozo@example.org](mailto\\:casey.cardozo@example.org) |
 | --- | --- | --- | --- | --- | --- |
@@ -5814,12 +5832,16 @@ class ProgressBar:
         self.total = max(0, total)
         self.enabled = enabled
         self.stream = stream or sys.stderr
-        self.transient = bool(not verbose and self.stream.isatty())
+        # A real terminal keeps one live bar as its final line even when verbose
+        # row explanations are enabled. Redirected logs retain milestone lines.
+        self.transient = bool(self.stream.isatty())
+        self.pinned = bool(verbose and self.transient)
         self.last_bucket = -1
         self.last_emit = 0.0
         self.previous_length = 0
         self.last_current = -1
         self.finished = False
+        self.visible = False
 
     def __enter__(self) -> ProgressBar:
         self.update(0, force=True)
@@ -5845,11 +5867,20 @@ class ProgressBar:
             self.stream.flush()
             self.previous_length = len(line)
             self.last_bucket = percent
+            self.visible = True
         else:
             print(line, file=self.stream)
             self.last_bucket = bucket
         self.last_emit = now
         self.last_current = current
+
+    def clear(self) -> None:
+        """Temporarily erase a live bar so job output can be written above it."""
+        if not self.enabled or not self.transient or not self.visible:
+            return
+        self.stream.write("\r" + (" " * self.previous_length) + "\r")
+        self.stream.flush()
+        self.visible = False
 
     def finish(self) -> None:
         if not self.enabled or self.finished:
@@ -5859,12 +5890,15 @@ class ProgressBar:
         if self.transient:
             self.stream.write("\n")
             self.stream.flush()
+            self.visible = False
         self.finished = True
 
     def close(self) -> None:
         if self.enabled and self.transient and not self.finished:
-            self.stream.write("\n")
-            self.stream.flush()
+            if self.visible:
+                self.stream.write("\n")
+                self.stream.flush()
+            self.visible = False
         self.finished = True
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
