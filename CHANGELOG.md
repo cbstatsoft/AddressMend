@@ -3,6 +3,18 @@
 All notable changes to AddressMend are recorded here. The project uses
 semantic versioning.
 
+## 1.4.0 — 1 September 2026
+
+- Added an explicitly opt-in LLM fallback for rows left unresolved by the
+  deterministic cleaner, supporting OpenAI Responses, OpenAI-compatible Chat
+  Completions and Ollama's native chat API without third-party Python packages.
+- Constrained model output to field-level proposals and retained local syntax,
+  premise-preservation and detector gates before any `llm-high` change can
+  reach the cleaned TSV; uncertain proposals remain review-only.
+- Added batched requests, hashed local result caching, environment-only API
+  keys, remote-HTTPS enforcement and full personal-data disclosure in the
+  README and security guidance.
+
 ## 1.3.1 — 31 August 2026
 
 - Replaced unrestricted fuzzy address rewriting with a two-stage

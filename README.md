@@ -27,6 +27,8 @@ and LibreOffice Calc.
 - Automatically complete strongly corroborated number-only and flat-only
   addresses; retain weaker partial or fuzzy candidates for review.
 - Reuse corrections that a person has previously approved.
+- Optionally send only unresolved rows to OpenAI, another OpenAI-compatible API
+  or a local Ollama model for a constrained second-stage review.
 - Mark uncertain suggestions for review instead of silently presenting guesses
   as facts.
 - Use the native Windows, macOS, Wayland or X11 clipboard when available.
@@ -82,7 +84,14 @@ incomplete; only then does it generate and assess replacements.
 6. **Abstain and explain.** Fuzzy changes to complete text, broad online matches
    and conflicting or incomplete evidence are written as `review` or
    `unresolved`. They do not replace the field in the cleaned TSV.
-7. **Learn only after approval.** The `learn` command compares a raw batch with
+7. **Optionally review unresolved fields with an LLM.** This stage runs only
+   with `--llm-provider`. The model sees the unresolved record and deterministic
+   evidence, returns structured proposals and may abstain. A `high` proposal is
+   still checked locally for field syntax and premise preservation. It can be
+   applied automatically only where the detector already found incomplete,
+   invalid or explicitly bracketed input; changes to complete text remain
+   `review` suggestions.
+8. **Learn only after approval.** The `learn` command compares a raw batch with
    a row-aligned approved batch and stores exact row, person and address
    corrections in the local SQLite memory. Future exact matches are labelled
    `learned`; review suggestions never teach themselves.
@@ -121,6 +130,7 @@ Confidence labels in the review report have specific meanings:
 | Label | Meaning |
 | --- | --- |
 | `high` or numeric score | Deterministic field evidence met a calibrated automatic correction rule. |
+| `llm-high` | An opt-in LLM proposal passed both the model's high-confidence gate and AddressMend's local detector/validator gates. |
 | `learned` | An exact correction previously approved by a person was reused. |
 | `verified` | The supplied value was supported and did not need changing. |
 | `formatting` | Only wrappers, spacing or escaping changed. |
@@ -190,6 +200,7 @@ Option **9** switches to local-only processing.
 | Google Public DNS | Domain after `@` only | Check an uncommon email domain; never verifies a mailbox. |
 | OpenStreetMap/Nominatim | Address only when its postcode is missing or invalid | Provisional missing-postcode recovery. |
 | getAddress.io | Partial address and postcode, only when separately configured | Licensed premise lookup. |
+| Remote LLM API | The complete six-field record for a row already marked `review` or `unresolved`, plus its deterministic evidence | Constrained second-stage proposal. |
 
 Names and complete email addresses are not sent to Doogal, postcodes.io or DNS.
 Valid uncommon email domains are never changed merely because they resemble a
@@ -198,6 +209,55 @@ rewrite a mailbox.
 Nominatim calls are sequential, limited to at most one per second, cached and
 identified with an application user agent in accordance with its
 [public usage policy](https://operations.osmfoundation.org/policies/nominatim/).
+
+### Optional LLM fallback
+
+LLM processing is off by default. It is a fallback after the deterministic
+detector and lookup stages, not a replacement for them. It does not perform web
+search or independently verify an address. The output is constrained to the six
+known fields, checked locally and included in the audit. The cleaner accepts
+three provider modes:
+
+Desktop users can select menu option **10** to configure one of these providers
+without putting an API key in the programme; keys must already be present in an
+environment variable.
+
+| Provider | API used | Defaults |
+| --- | --- | --- |
+| `openai` | OpenAI Responses API with strict Structured Outputs and `store: false` | `https://api.openai.com/v1`, `gpt-5.6-luna`, key in `OPENAI_API_KEY` |
+| `compatible` | OpenAI-compatible `/chat/completions` with JSON output | Base URL and model required; optional key in `LLM_API_KEY` |
+| `ollama` | Native Ollama `/api/chat` with a JSON schema | `http://localhost:11434`; model required; no key |
+
+```sh
+# OpenAI (API billing is separate from a ChatGPT subscription)
+export OPENAI_API_KEY='...'
+./addressmend.py clean input.tsv -o output.tsv --audit review.tsv \
+  --memory corrections.sqlite --llm-provider openai
+
+# A different OpenAI-compatible service
+export LLM_API_KEY='...'
+./addressmend.py clean input.tsv -o output.tsv --audit review.tsv \
+  --llm-provider compatible --llm-base-url https://llm.example/v1 \
+  --llm-model provider-model
+
+# Local Ollama; pull the chosen model first
+ollama pull gpt-oss:20b
+./addressmend.py clean input.tsv -o output.tsv --audit review.tsv \
+  --memory corrections.sqlite --llm-provider ollama --llm-model gpt-oss:20b
+```
+
+Remote endpoints must use HTTPS; unencrypted HTTP is accepted only for a
+loopback address. API keys are read from environment variables and are never
+written to the audit or cache. When `--memory` is supplied, the request is
+identified in SQLite by a hash and the structured result is cached to avoid
+repeat cost; the cached proposal can itself contain personal data. Local Ollama
+keeps the request on the computer only when its base URL is loopback. Any other
+endpoint sends the full unresolved record to that provider, so check its terms,
+retention and data-location policy first.
+
+The API has no access to this project's previous ChatGPT conversations or
+ChatGPT memory. Reuse approved results through AddressMend's explicit `learn`
+command and local correction database.
 
 Input files, outputs, downloaded datasets and SQLite databases are ignored by
 Git because they can contain personal data or be very large. Do not add real

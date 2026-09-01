@@ -20,6 +20,10 @@ issue.
 - Keep live input, output and SQLite files outside Git.
 - Do not commit test cases copied from real contact records.
 - Store API keys in environment variables, not source files or command history.
+- Treat `--llm-provider` as disclosure of an entire unresolved contact row to
+  the configured endpoint. Use loopback Ollama when records must remain local.
+- Remember that the local LLM cache can contain names, addresses and email
+  addresses even though its lookup key is hashed.
 - Treat third-party address results as evidence, not guaranteed truth.
 - Confirm substantive address, postcode, name and email suggestions before
   approving them into correction memory; review-only candidates do not alter
