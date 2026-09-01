@@ -31,9 +31,11 @@ if not defined PYTHON_CMD (
 )
 
 %PYTHON_CMD% "%~dp0addressmend.py"
-if errorlevel 1 (
+set "ADDRESSMEND_EXIT=%ERRORLEVEL%"
+if not "%ADDRESSMEND_EXIT%"=="0" (
     echo.
     echo The programme reported a problem. Read the message above before closing.
+    echo.
+    pause
 )
-echo.
-pause
+exit /b %ADDRESSMEND_EXIT%
