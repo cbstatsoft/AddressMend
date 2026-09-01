@@ -212,13 +212,22 @@ AddressMend distinguishes a match score from a probability. `--address-threshold
 controls candidate retrieval and string agreement; it does **not** mean that a
 candidate has that probability of being correct. The separate
 `--auto-approve-threshold` controls promotion of otherwise provisional address
-suggestions:
+suggestions. Desktop option **15** changes the same total threshold for the
+current AddressMend session; it applies to pasted, clipboard and saved-file
+batches:
 
 | Setting | Automatic behaviour | Recommended use |
 | --- | --- | --- |
 | `0.99` (default) | Requires exact agreement from at least two lookup families, a valid postcode, no competing candidate and exact preservation of supplied premise identifiers. | Normal batches; minimizes manual review by corroborating evidence without accepting single-source guesses. |
 | `0.95` | Also permits one structurally safe lookup family to promote its sole candidate. | Only after measuring at least 99% precision on representative approved AddressMend batches; the programme prints a warning. |
 | Above `0.99` | Leaves even two-source candidates for approval. | Especially costly or sensitive data. |
+
+This setting does not disable or raise the requirements of AddressMend's
+existing deterministic automatic rules, approved-correction memory or harmless
+formatting. It controls only whether a lookup correction that would otherwise
+be marked `review` may enter the completed TSV automatically. Structural vetoes
+always win over the number: premise conflicts, invalid postcodes and competing
+candidates remain for review at both 0.95 and 0.99.
 
 The familiar statistical convention of a 95% confidence interval is not the
 same as accepting a record with a 95% estimated match probability. If the latter

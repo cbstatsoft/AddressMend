@@ -5198,6 +5198,10 @@ def self_test() -> int:
     assert default_clean.ollama_web_search
     assert default_clean.llm_provider is None
     assert default_clean.auto_approve_threshold == DEFAULT_AUTO_APPROVE_THRESHOLD
+    with patch("builtins.print"):
+        assert friendly_auto_approve_threshold(0.99, lambda _question: "2") == 0.95
+        assert friendly_auto_approve_threshold(0.95, lambda _question: "1") == 0.99
+        assert friendly_auto_approve_threshold(0.95, lambda _question: "b") == 0.95
 
     corroborated_record = Record(
         "", "Example", "Person", "10 Careton Road", "NG12 3HP", ""
@@ -6200,6 +6204,7 @@ def friendly_clean(
     online: bool = True,
     llm_settings: dict[str, object] | None = None,
     homedata: bool = True,
+    auto_approve_threshold: float = DEFAULT_AUTO_APPROVE_THRESHOLD,
 ) -> None:
     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
     output = results_dir / f"cleaned_entries_{stamp}.tsv"
@@ -6214,6 +6219,19 @@ def friendly_clean(
     )
     print(
         "corrections, harmonise addresses with their postcodes and explain every decision."
+    )
+    threshold_mode = (
+        "manual approval for provisional candidates"
+        if auto_approve_threshold >= 1.0
+        else (
+            "two-source corroboration"
+            if auto_approve_threshold >= 0.99
+            else "single-source structural checks"
+        )
+    )
+    print(
+        "Provisional automatic-entry threshold: "
+        f"{auto_approve_threshold:.2f} ({threshold_mode})"
     )
     if online:
         print(
@@ -6281,7 +6299,7 @@ def friendly_clean(
         llm_batch_size=10,
         llm_timeout=120.0,
         address_threshold=0.84,
-        auto_approve_threshold=DEFAULT_AUTO_APPROVE_THRESHOLD,
+        auto_approve_threshold=auto_approve_threshold,
         auto_name=True,
         header=False,
         explain=True,
@@ -6351,6 +6369,7 @@ def friendly_paste(
     online: bool = True,
     llm_settings: dict[str, object] | None = None,
     homedata: bool = True,
+    auto_approve_threshold: float = DEFAULT_AUTO_APPROVE_THRESHOLD,
 ) -> None:
     text = pasted_text()
     if not text:
@@ -6371,7 +6390,13 @@ def friendly_paste(
         raise
     temporary = Path(handle.name)
     friendly_clean(
-        str(temporary), results_dir, temporary, online, llm_settings, homedata
+        str(temporary),
+        results_dir,
+        temporary,
+        online,
+        llm_settings,
+        homedata,
+        auto_approve_threshold,
     )
 
 
@@ -7051,6 +7076,44 @@ def friendly_llm_configuration() -> dict[str, object] | None:
     return None
 
 
+def friendly_auto_approve_threshold(
+    current: float,
+    prompt: Callable[[str], str] | None = None,
+) -> float:
+    """Choose the total evidence threshold for promoting review candidates."""
+    ask = prompt or input
+    print()
+    print("AUTOMATIC ENTRY OF PROVISIONAL CORRECTIONS")
+    print(
+        "This setting affects only corrections that would otherwise require manual "
+        "approval. Existing deterministic rules, approved memory and harmless "
+        "formatting are unchanged."
+    )
+    print(
+        "Structural safeguards always remain: conflicting candidates, invalid "
+        "postcodes and changed house/flat identifiers cannot be promoted."
+    )
+    print("  1  0.99 — two lookup families must agree (recommended/default)")
+    print("  2  0.95 — one structurally safe lookup candidate may be inserted")
+    print("  3  1.00 — keep all provisional lookup candidates for approval")
+    print("  B  Keep the current setting")
+    while True:
+        choice = ask("Total automatic-entry threshold: ").strip().casefold()
+        if choice == "1":
+            return 0.99
+        if choice == "2":
+            print(
+                "0.95 selected. This should reduce manual review but relies on one "
+                "lookup family when all structural checks pass."
+            )
+            return 0.95
+        if choice == "3":
+            return 1.0
+        if choice in {"b", "back", "", "keep"}:
+            return current
+        print("Please choose 1, 2, 3 or B.")
+
+
 def friendly_menu() -> int:
     """Run the desktop menu with window-aware prompts and job-log output."""
     with friendly_output_wrapping():
@@ -7062,6 +7125,7 @@ def _friendly_menu() -> int:
     results_dir = friendly_results_directory()
     online = True
     homedata = True
+    auto_approve_threshold = DEFAULT_AUTO_APPROVE_THRESHOLD
     llm_settings: dict[str, object] | None = None
     while True:
         print()
@@ -7102,10 +7166,20 @@ def _friendly_menu() -> int:
         print(" 12  Install/configure local Ollama and optional web evidence")
         print(" 13  Enter or replace an API key")
         print(" 14  Review and approve flagged corrections")
+        print(
+            " 15  Change provisional automatic-entry threshold "
+            f"(currently {auto_approve_threshold:.2f})"
+        )
         print("  Q  Close the programme")
         choice = input("\nChoose an option: ").strip().casefold()
         if choice == "1":
-            friendly_paste(results_dir, online, llm_settings, homedata)
+            friendly_paste(
+                results_dir,
+                online,
+                llm_settings,
+                homedata,
+                auto_approve_threshold,
+            )
         elif choice == "2":
             print("The programme will read the text currently copied to the clipboard.")
             friendly_clean(
@@ -7114,6 +7188,7 @@ def _friendly_menu() -> int:
                 online=online,
                 llm_settings=llm_settings,
                 homedata=homedata,
+                auto_approve_threshold=auto_approve_threshold,
             )
         elif choice == "3":
             print(
@@ -7127,6 +7202,7 @@ def _friendly_menu() -> int:
                     online=online,
                     llm_settings=llm_settings,
                     homedata=homedata,
+                    auto_approve_threshold=auto_approve_threshold,
                 )
         elif choice == "4":
             friendly_download(results_dir)
@@ -7179,11 +7255,15 @@ def _friendly_menu() -> int:
             friendly_api_key_menu()
         elif choice == "14":
             friendly_review_flagged(results_dir)
+        elif choice == "15":
+            auto_approve_threshold = friendly_auto_approve_threshold(
+                auto_approve_threshold
+            )
         elif choice in {"q", "quit", "exit"}:
             print("You may now close this window.")
             return 0
         else:
-            print("Please choose 1 to 14, or Q to close the programme.")
+            print("Please choose 1 to 15, or Q to close the programme.")
         friendly_return_to_menu()
 
 

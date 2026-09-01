@@ -12,6 +12,9 @@ semantic versioning.
 - Added an explicit `--auto-approve-threshold 0.95` option for operators who
   accept single-source structurally safe candidates, with a visible warning
   about the higher silent-error risk.
+- Added desktop option 15 to select a total provisional-correction threshold of
+  0.99, 0.95 or 1.00 for every input route in the current session, without
+  changing the established deterministic automatic rules.
 - Added desktop option 14 for approving, rejecting or deferring flagged
   corrections inside AddressMend without editing a TSV manually.
 - Save approvals to a new approved TSV, copy it to the system clipboard, retain
