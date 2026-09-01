@@ -131,7 +131,10 @@ After a desktop-menu batch succeeds, the exact contents of the completed
 `cleaned_entries_…tsv` are also placed on the system clipboard. This happens
 after deterministic lookups and the optional LLM fallback, so the saved file and
 the pasted six-column table are the same final result. Command-line users can
-request the same behaviour with `-o @clipboard`.
+request the same behaviour with `-o @clipboard`. On Windows, AddressMend uses the
+native Unicode clipboard API and reads the value back before reporting success.
+Paste the result into the first spreadsheet cell with Ctrl+V; Ctrl+C in the
+AddressMend console is an interrupt, not a clipboard-copy command.
 
 On first use, AddressMend tries to rename an existing `AddressMend Results`,
 `UK Address Harmoniser Results` or `UK Address Cleaner Results` folder to the new
@@ -352,7 +355,9 @@ Python 3.10 or newer must already be available.
 
 Download or clone the repository, then double-click `start.cmd`. AddressMend
 runs from that folder and saves its working files under
-`Documents/AddressMend`.
+`Documents/AddressMend`. After a batch, press Enter to return to the main menu;
+choose **Q** when you intend to close it. The launcher pauses only after an error,
+so a normal **Q** exit now closes cleanly without a second “Press any key” prompt.
 
 ### macOS
 

@@ -560,6 +560,8 @@ def make_record(row: Sequence[object]) -> Record:
 
 
 _CLIPBOARD_OWNERS: list[subprocess.Popen[str]] = []
+_WINDOWS_CF_UNICODETEXT = 13
+_WINDOWS_GMEM_MOVEABLE = 0x0002
 
 
 def clipboard_backend(write: bool = True) -> str:
@@ -592,6 +594,104 @@ def _tk_clipboard_get() -> str:
         return str(root.clipboard_get())
     finally:
         root.destroy()
+
+
+def _open_windows_clipboard(user32: object) -> None:
+    """Wait briefly for another Windows process to release the clipboard."""
+    for _attempt in range(20):
+        if user32.OpenClipboard(None):  # type: ignore[attr-defined]
+            return
+        time.sleep(0.025)
+    raise OSError("the Windows clipboard remained busy")
+
+
+def _windows_clipboard_get() -> str:
+    """Read persistent Unicode text through the native Windows clipboard API."""
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+    user32.OpenClipboard.restype = ctypes.c_int
+    user32.CloseClipboard.argtypes = []
+    user32.CloseClipboard.restype = ctypes.c_int
+    user32.IsClipboardFormatAvailable.argtypes = [ctypes.c_uint]
+    user32.IsClipboardFormatAvailable.restype = ctypes.c_int
+    user32.GetClipboardData.argtypes = [ctypes.c_uint]
+    user32.GetClipboardData.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalUnlock.restype = ctypes.c_int
+
+    _open_windows_clipboard(user32)
+    try:
+        if not user32.IsClipboardFormatAvailable(_WINDOWS_CF_UNICODETEXT):
+            raise OSError("the Windows clipboard does not contain text")
+        handle = user32.GetClipboardData(_WINDOWS_CF_UNICODETEXT)
+        if not handle:
+            raise OSError("Windows could not provide clipboard text")
+        pointer = kernel32.GlobalLock(handle)
+        if not pointer:
+            raise OSError("Windows could not lock clipboard memory")
+        try:
+            return ctypes.wstring_at(pointer)
+        finally:
+            kernel32.GlobalUnlock(handle)
+    finally:
+        user32.CloseClipboard()
+
+
+def _windows_clipboard_set(value: str) -> None:
+    """Store persistent Unicode text through the native Windows clipboard API."""
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+    user32.OpenClipboard.restype = ctypes.c_int
+    user32.CloseClipboard.argtypes = []
+    user32.CloseClipboard.restype = ctypes.c_int
+    user32.EmptyClipboard.argtypes = []
+    user32.EmptyClipboard.restype = ctypes.c_int
+    user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+    user32.SetClipboardData.restype = ctypes.c_void_p
+    kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = ctypes.c_void_p
+    kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalFree.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalUnlock.restype = ctypes.c_int
+
+    buffer = ctypes.create_unicode_buffer(value)
+    size = ctypes.sizeof(buffer)
+    handle = kernel32.GlobalAlloc(_WINDOWS_GMEM_MOVEABLE, size)
+    if not handle:
+        raise OSError("Windows could not allocate clipboard memory")
+    pointer = kernel32.GlobalLock(handle)
+    if not pointer:
+        kernel32.GlobalFree(handle)
+        raise OSError("Windows could not lock clipboard memory")
+    ctypes.memmove(pointer, ctypes.addressof(buffer), size)
+    kernel32.GlobalUnlock(handle)
+
+    transferred = False
+    try:
+        _open_windows_clipboard(user32)
+        try:
+            if not user32.EmptyClipboard():
+                raise OSError("Windows could not clear the clipboard")
+            if not user32.SetClipboardData(_WINDOWS_CF_UNICODETEXT, handle):
+                raise OSError("Windows could not store clipboard text")
+            transferred = True
+        finally:
+            user32.CloseClipboard()
+    finally:
+        # SetClipboardData owns the allocation after success; otherwise we do.
+        if not transferred:
+            kernel32.GlobalFree(handle)
 
 
 def _start_clipboard_owner(command: Sequence[str], value: str) -> None:
@@ -639,6 +739,8 @@ root.mainloop()
 def clipboard_get() -> str:
     """Read text from Windows, macOS, Wayland or X11 without Python packages."""
     try:
+        if os.name == "nt":
+            return _windows_clipboard_get()
         if sys.platform == "darwin" and shutil.which("pbpaste"):
             result = subprocess.run(
                 ["pbpaste"],
@@ -696,15 +798,10 @@ def clipboard_set(value: str) -> str:
     """Copy spreadsheet-ready TSV and return the clipboard route used."""
     try:
         if os.name == "nt":
-            import tkinter as tk
-
-            root = tk.Tk()
-            root.withdraw()
-            root.clipboard_clear()
-            root.clipboard_append(value)
-            root.update()
-            root.destroy()
-            return "Windows clipboard"
+            _windows_clipboard_set(value)
+            if _windows_clipboard_get() != value:
+                raise OSError("Windows clipboard verification did not match the completed TSV")
+            return "verified Windows Unicode clipboard"
         if sys.platform == "darwin" and shutil.which("pbcopy"):
             subprocess.run(
                 ["pbcopy"],
@@ -1476,8 +1573,14 @@ def nominatim_address_lookup(
             (cache_key,),
         ).fetchone()
         if cached:
-            saved = json.loads(cached[0])
-            return (str(saved[0]), str(saved[1])) if saved else None
+            try:
+                saved = json.loads(cached[0])
+                if isinstance(saved, list) and len(saved) == 2:
+                    return str(saved[0]), str(saved[1])
+                if saved == []:
+                    return None
+            except (TypeError, ValueError):
+                pass
 
     wait = max(1.05, delay) - (time.monotonic() - _LAST_NOMINATIM_REQUEST)
     if wait > 0:
@@ -3434,7 +3537,24 @@ def apply_llm_fallback(
 def clean_records(args: argparse.Namespace) -> int:
     raw_records = read_records(args.input)
     memory = connect_memory(args.memory)
-    index = AddressIndex(args.db)
+    index: AddressIndex | None = None
+    try:
+        index = AddressIndex(args.db)
+        return clean_records_with_resources(args, raw_records, memory, index)
+    finally:
+        if index:
+            index.close()
+        if memory:
+            memory.close()
+
+
+def clean_records_with_resources(
+    args: argparse.Namespace,
+    raw_records: list[Record],
+    memory: sqlite3.Connection | None,
+    index: AddressIndex,
+) -> int:
+    """Clean a batch while the wrapper guarantees database cleanup."""
     llm = llm_config(args)
     api_key = (
         os.environ.get(args.getaddress_key_env, "") if args.getaddress_key_env else ""
@@ -3517,9 +3637,6 @@ def clean_records(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
     exit_status = 0 if not (args.fail_on_unresolved and (unresolved or review)) else 2
-    index.close()
-    if memory:
-        memory.close()
     return exit_status
 
 
@@ -3852,6 +3969,7 @@ def build_index(args: argparse.Namespace) -> int:
             "Higher-ranked sources win ordering; duplicate address spellings remain available for matching.",
             file=sys.stderr,
         )
+    db.close()
     return 0
 
 
@@ -3902,6 +4020,7 @@ def build_postcodes(args: argparse.Namespace) -> int:
             "This reference validates/corrects postcodes; it cannot supply street addresses by itself.",
             file=sys.stderr,
         )
+    db.close()
     return 0
 
 
@@ -4537,6 +4656,57 @@ def self_test() -> int:
         assert clipboard_backend(write=True) == "macOS clipboard through pbcopy"
         assert clipboard_backend(write=False) == "macOS clipboard through pbpaste"
 
+    windows_clipboard: dict[str, str] = {}
+    with (
+        patch.object(os, "name", "nt"),
+        patch(
+            __name__ + "._windows_clipboard_set",
+            side_effect=lambda value: windows_clipboard.setdefault("value", value),
+        ),
+        patch(
+            __name__ + "._windows_clipboard_get",
+            side_effect=lambda: windows_clipboard.get("value", ""),
+        ),
+    ):
+        assert clipboard_set("one\ttwo\n") == "verified Windows Unicode clipboard"
+        assert clipboard_get() == "one\ttwo\n"
+
+    with (
+        patch("builtins.input", side_effect=KeyboardInterrupt),
+        patch("builtins.print") as printed,
+    ):
+        friendly_return_to_menu()
+    assert "Returning to the menu" in printed.call_args.args[0]
+
+    class ClosingResource:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    closing_memory = ClosingResource()
+    closing_index = ClosingResource()
+    with (
+        patch(__name__ + ".read_records", return_value=[]),
+        patch(__name__ + ".connect_memory", return_value=closing_memory),
+        patch(__name__ + ".AddressIndex", return_value=closing_index),
+        patch(__name__ + ".clean_records_with_resources", side_effect=RuntimeError("test")),
+    ):
+        try:
+            clean_records(argparse.Namespace(input="test", memory="test", db="test"))
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("clean_records suppressed a processing failure")
+    assert closing_memory.closed and closing_index.closed
+
+    launcher_path = Path(__file__).with_name("start.cmd")
+    if launcher_path.is_file():
+        launcher = launcher_path.read_text(encoding="utf-8")
+        assert 'if not "%ADDRESSMEND_EXIT%"=="0"' in launcher
+        assert launcher.rstrip().endswith("exit /b %ADDRESSMEND_EXIT%")
+
     with tempfile.TemporaryDirectory() as temporary_directory:
         source = Path(temporary_directory) / "input.tsv"
         source.write_text(
@@ -4685,6 +4855,17 @@ def friendly_yes_no(question: str) -> bool:
         if answer in {"n", "no"}:
             return False
         print("Please type Y for yes or N for no.")
+
+
+def friendly_return_to_menu() -> None:
+    """Pause after an action without letting an accidental Ctrl+C close the menu."""
+    try:
+        input("\nPress Enter to return to the main menu...")
+    except KeyboardInterrupt:
+        print(
+            "\nCtrl+C is a console interrupt, not Paste. The completed table was "
+            "copied automatically; use Ctrl+V in your spreadsheet. Returning to the menu."
+        )
 
 
 def friendly_path(prompt: str) -> Path | None:
@@ -4943,9 +5124,9 @@ def friendly_clean(
         if clipboard_route:
             print(f"Copied through {clipboard_route}.")
             print(
-                "Open Microsoft Excel, Apple Numbers or LibreOffice Calc and "
-                "select the first cell. "
-                "Press Command+V on macOS or Ctrl+V elsewhere."
+                "The completed table is on the clipboard. Open Microsoft Excel, "
+                "Apple Numbers or LibreOffice Calc, select the first cell, then press "
+                "Command+V on macOS or Ctrl+V on Windows/Linux. Do not press Ctrl+C here."
             )
         else:
             print(
@@ -5616,7 +5797,7 @@ def friendly_menu() -> int:
             return 0
         else:
             print("Please choose 1 to 12, or Q to close the programme.")
-        input("\nPress Enter to return to the main menu...")
+        friendly_return_to_menu()
 
 
 def parser() -> argparse.ArgumentParser:
