@@ -5,6 +5,11 @@ semantic versioning.
 
 ## 1.7.0 — 7 September 2026
 
+- Add an immediate post-batch review offer and a latest-batch shortcut, with a
+  scrolling full-screen approval panel, safe text fallback and newly timestamped
+  output for each review. Finish/interrupt saves decisions already made.
+- Attempt missing Windows curses installation with pip once per desktop session;
+  use user/virtual-environment installation and fall back if unavailable.
 - Added curses main/provider menus with arrows, paging, hjkl, resizing and
   numbered fallback; restore terminal mode before prompts and job output.
 - Combined provider selection and local Ollama installation into one LLM menu

@@ -25,10 +25,15 @@ jump to the first/last item, Page Up/Page Down scroll, and Q/Escape exits or goe
 back. Text-entry forms use normal typing. Menus restore the terminal before
 running jobs, so output wrapping and the pinned progress bar continue to work.
 
-Standard Windows Python does not include curses. To enable it without administrator
-rights, run `py -m pip install --user windows-curses`, or install the project's
-optional `terminal` extra. Without it, the numbered menu remains available.
-Set `ADDRESSMEND_NO_CURSES=1` to force numbered menus on any OS.
+Standard Windows Python does not include curses. On interactive desktop startup,
+AddressMend attempts to install missing `windows-curses` through the running
+interpreter's pip, once per session. It uses `--user` outside a virtual environment
+and limits the attempt to 45 seconds. This downloads a package from the configured
+pip package index. If pip, network access or permissions are unavailable, the
+numbered menu and text approval prompts continue to work. Manual installation is
+also available with `py -m pip install --user windows-curses` or the project's
+optional `terminal` extra. `ADDRESSMEND_NO_CURSES=1` disables full-screen menus and
+the automatic installation attempt. Command-line cleaning does not install it.
 
 Provider/model, lookup and threshold choices apply to the current session. Saved
 API keys and approved correction memory persist across restarts.
@@ -305,15 +310,26 @@ unique identifier for every UK addressable location:
 
 ### Approving flagged corrections in the programme
 
-Choose desktop option **13**, then drag in a `review_report_…tsv`. AddressMend
-finds the matching `cleaned_entries_…tsv` in the same folder and shows each
-provisional correction with its current value, suggestion and evidence. Choose:
+After a batch containing provisional suggestions, choose **Review and approve
+proposed corrections now**. No file selection is needed. Alternatively, desktop
+option **13** offers the latest batch or a different `review_report_…tsv`.
+AddressMend finds its matching cleaned TSV and shows each valid proposed
+correction with the current value, suggestion, evidence and record context.
+Fields with no usable suggestion still require checking against the source.
+
+In the full-screen review panel, use **A** to approve, **R** to keep the current
+value, **S** or Enter to skip, and **Q** or Escape to finish and save. Scroll long
+details with arrows, j/k or Page Up/Page Down. In the text fallback, choose:
 
 - **A** to approve and insert the suggestion;
 - **K** to reject it and retain the current value;
 - **S** to leave it undecided for later;
 - **Q** to finish and save decisions made so far.
 
+Q, Ctrl+C or end-of-input saves decisions made so far. Every review produces
+a newly timestamped approved TSV and decision report, so revisiting an original
+report does not overwrite an earlier review. Reopening that report starts from
+its original cleaned TSV; it does not resume the earlier review automatically.
 The original files are never overwritten. The new approved TSV is copied to the
 clipboard, and address approvals plus all approve/reject/skip outcomes are stored
 locally. This makes repeated corrections reusable and provides calibration data

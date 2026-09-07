@@ -1076,9 +1076,13 @@ def review_flagged_corrections(
         print(f"Suggested: {suggestion}")
         print(f"Evidence:  {candidate.reason}")
         while True:
-            choice = ask(
-                "Approve [A], keep current [K], skip [S], or finish [Q]: "
-            ).strip().casefold()
+            try:
+                choice = (
+                    ask("Approve [A], keep current [K], skip [S], or finish [Q]: ")
+                    if prompt is not None else friendly_review_choice(record, candidate, suggestion, position, len(candidates))
+                ).strip().casefold()
+            except (KeyboardInterrupt, EOFError):
+                choice = "q"
             if choice in {"a", "approve", "y", "yes"}:
                 setattr(record, candidate.field, suggestion)
                 decision = "approved"
@@ -6482,6 +6486,8 @@ def friendly_clean(
             print(
                 f"It also marks {provisional} provisional correction(s) for you to confirm."
             )
+            if friendly_yes_no("Review and approve proposed corrections now?"):
+                friendly_review_flagged(results_dir, audit, output)
     except (Exception, SystemExit) as exc:
         print()
         print("The batch could not be completed.")
@@ -6633,7 +6639,89 @@ def friendly_learn(results_dir: Path) -> None:
         print(f"The corrections could not be learned: {exc}")
 
 
-def friendly_review_flagged(results_dir: Path) -> None:
+def _review_curses_screen(screen, record, candidate, suggestion, position, total):
+    import curses
+
+    screen.keypad(True)
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
+    offset = 0
+    while True:
+        screen.erase()
+        height, width = screen.getmaxyx()
+        if height < 9 or width < 30:
+            _curses_write(screen, 0, 0, "Enlarge window; Q saves/exits", width)
+            screen.refresh()
+            key = screen.getch()
+            if key in {ord("q"), ord("Q"), 27, -1}:
+                return "q"
+            continue
+        heading = f"REVIEW {position}/{total} - row {candidate.row}"
+        header = [heading] + textwrap.wrap(COPYRIGHT, width - 1) + textwrap.wrap(
+            "GNU GPL v3 or later; no warranty", width - 1
+        )
+        for row, line in enumerate(header):
+            _curses_write(screen, row, 0, line, width, curses.A_BOLD if row == 0 else curses.A_NORMAL)
+        sections = [
+            f"Person: {record.title} {record.first_name} {record.last_name}",
+            f"Address: {record.address} | Postcode: {record.postcode}",
+            f"Email: {record.email}",
+            f"Field: {candidate.field}",
+            f"Current: {getattr(record, candidate.field) or '(blank)'}",
+            f"Suggested: {suggestion}",
+            f"Evidence: {candidate.reason}",
+        ]
+        lines = []
+        for section in sections:
+            lines.extend(textwrap.wrap(section, max(1, width - 2)) or [""])
+            lines.append("")
+        visible = max(1, height - len(header) - 3)
+        offset = max(0, min(offset, max(0, len(lines) - visible)))
+        for row, line in enumerate(lines[offset:offset + visible], start=len(header)):
+            _curses_write(screen, row, 0, line, width)
+        _curses_write(screen, height - 3, 0, "A approve R keep S skip Q save", width, curses.A_BOLD)
+        _curses_write(screen, height - 2, 0, "j/k scroll; Enter skips", width)
+        _curses_write(screen, height - 1, 0, f"Detail lines {offset + 1}-{min(offset + visible, len(lines))}/{len(lines)}", width)
+        screen.refresh()
+        key = screen.getch()
+        if key in {ord("a"), ord("A")}:
+            return "a"
+        if key in {ord("r"), ord("R")}:
+            return "k"
+        if key in {ord("s"), ord("S"), 10, 13, curses.KEY_ENTER}:
+            return "s"
+        if key in {ord("q"), ord("Q"), 27, -1}:
+            return "q"
+        if key in {curses.KEY_DOWN, ord("j")}:
+            offset += 1
+        elif key in {curses.KEY_UP, ord("k")}:
+            offset -= 1
+        elif key == curses.KEY_NPAGE:
+            offset += visible
+        elif key == curses.KEY_PPAGE:
+            offset -= visible
+
+
+def friendly_review_choice(record, candidate, suggestion, position, total) -> str:
+    if friendly_curses_available():
+        import curses
+
+        sys.stdout.flush()
+        sys.stderr.flush()
+        try:
+            return curses.wrapper(
+                _review_curses_screen, record, candidate, suggestion, position, total
+            )
+        except (curses.error, OSError):
+            print("Full-screen review unavailable; use the text choices below.")
+    return input("Approve [A], keep current [K], skip [S], or finish/save [Q]: ")
+
+
+def friendly_review_flagged(
+    results_dir: Path, report: Path | None = None, cleaned: Path | None = None
+) -> None:
     """Approve provisional corrections without editing TSV files by hand."""
     print()
     print("REVIEW AND APPROVE FLAGGED CORRECTIONS")
@@ -6641,18 +6729,32 @@ def friendly_review_flagged(results_dir: Path) -> None:
         "Choose a review_report TSV. AddressMend will find its matching cleaned TSV, "
         "show each provisional correction and save a new approved copy."
     )
-    report = friendly_path("Drag or type the REVIEW REPORT here: ")
+    if report is None:
+        recent = sorted(results_dir.glob("review_report_*.tsv"), reverse=True)
+        if recent:
+            choice = friendly_select("Review corrections", [
+                ("1", f"Review latest batch: {recent[0].name}"),
+                ("2", "Choose another review report"),
+                ("b", "Back"),
+            ])
+            if choice == "1":
+                report = recent[0]
+            elif choice != "2":
+                return
+        if report is None:
+            report = friendly_path("Drag or type the REVIEW REPORT here: ")
     if not report:
         return
     prefix = "review_report_"
     stamp = report.stem[len(prefix) :] if report.stem.startswith(prefix) else ""
-    cleaned = report.with_name(f"cleaned_entries_{stamp}.tsv") if stamp else None
+    if cleaned is None:
+        cleaned = report.with_name(f"cleaned_entries_{stamp}.tsv") if stamp else None
     if not cleaned or not cleaned.is_file():
         print("The matching cleaned TSV was not beside that report.")
         cleaned = friendly_path("Drag or type the CLEANED TSV here: ")
     if not cleaned:
         return
-    output_stamp = stamp or datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
+    output_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
     approved_path = report.with_name(f"approved_entries_{output_stamp}.tsv")
     decisions_path = report.with_name(f"approval_decisions_{output_stamp}.tsv")
     memory_path = results_dir / "corrections_and_online_cache.sqlite"
@@ -7426,6 +7528,33 @@ def friendly_menu_items(
     ]
 
 
+_CURSES_INSTALL_ATTEMPTED = False
+
+
+def install_windows_curses() -> bool:
+    """Attempt the optional desktop dependency once without requiring elevation."""
+    global _CURSES_INSTALL_ATTEMPTED
+    if _CURSES_INSTALL_ATTEMPTED or os.name != "nt":
+        return False
+    _CURSES_INSTALL_ATTEMPTED = True
+    print("Installing missing Windows menu support (windows-curses) with pip...")
+    command = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-input"]
+    if sys.prefix == sys.base_prefix:
+        command.append("--user")
+    command.append("windows-curses")
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=45, check=False)
+    except (OSError, subprocess.SubprocessError):
+        print("Automatic installation was unavailable; continuing with text menus.")
+        return False
+    if result.returncode:
+        print("pip could not install menu support; continuing with text menus.")
+        print("You can retry later with: python -m pip install --user windows-curses")
+        return False
+    importlib.invalidate_caches()
+    return True
+
+
 def friendly_curses_available() -> bool:
     """Use curses only on an interactive terminal where its module can initialise."""
     if os.environ.get("ADDRESSMEND_NO_CURSES", "").casefold() in {"1", "true", "yes"}:
@@ -7436,8 +7565,14 @@ def friendly_curses_available() -> bool:
         return False
     try:
         import curses  # noqa: F401
-    except ImportError:
-        return False
+    except (ImportError, OSError):
+        if not install_windows_curses():
+            return False
+        try:
+            import curses
+        except (ImportError, OSError):
+            print("Menu support is installed but cannot load yet; using text menus. Try restarting AddressMend.")
+            return False
     return True
 
 
