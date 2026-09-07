@@ -3,6 +3,26 @@
 All notable changes to AddressMend are recorded here. The project uses
 semantic versioning.
 
+## 1.7.0 — 7 September 2026
+
+- Added curses main/provider menus with arrows, paging, hjkl, resizing and
+  numbered fallback; restore terminal mode before prompts and job output.
+- Combined provider selection and local Ollama installation into one LLM menu
+  option, retaining previous settings when setup fails or is cancelled.
+- Check Ollama server/model availability and structured JSON during setup;
+  offer local service startup and align downloads with the selected endpoint.
+- Use one-row/300-second Ollama defaults, bounded context and model-specific
+  thinking settings. Reject replies referring to rows outside the current batch.
+- Repair unique invalid email-domain glyphs with restricted OCR confusion sets;
+  keep valid-looking domain typos for review after DNS failure and preserve the
+  mailbox identifier. Do not automatically remove ambiguous duplicate @ signs.
+- Keep DNS service failures distinct from invalid domains and expire DNS cache
+  results after one day; discard results cached by the old DNS decision rules.
+- Add menu option 15 for confirmed SQLite secure deletion and compaction of
+  lookup/LLM caches while preserving approved corrections and decision history.
+- Clarify independent network settings, session-only provider choices and
+  cache deletion limits. API keys/review/threshold are now options 12/13/14.
+
 ## 1.6.0 — 1 September 2026
 
 - Added a default 0.99 operational evidence tier that promotes an otherwise
