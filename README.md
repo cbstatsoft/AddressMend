@@ -16,8 +16,41 @@ primarily for restricted Windows work environments without administrator
 rights, while also supporting macOS, GNU/Linux, Microsoft Excel, Apple Numbers
 and LibreOffice Calc.
 
+## Desktop controls and settings
+
+The main menu and LLM provider selector use Python curses on supported interactive
+terminals. Arrow keys or **j/k** move; **l** or Enter selects; **h** or Left returns
+from the provider selector. At the main menu, h does nothing. Home/End (or g/G)
+jump to the first/last item, Page Up/Page Down scroll, and Q/Escape exits or goes
+back. Text-entry forms use normal typing. Menus restore the terminal before
+running jobs, so output wrapping and the pinned progress bar continue to work.
+
+Standard Windows Python does not include curses. To enable it without administrator
+rights, run `py -m pip install --user windows-curses`, or install the project's
+optional `terminal` extra. Without it, the numbered menu remains available.
+Set `ADDRESSMEND_NO_CURSES=1` to force numbered menus on any OS.
+
+Provider/model, lookup and threshold choices apply to the current session. Saved
+API keys and approved correction memory persist across restarts.
+
+| Numbered option | Action |
+| --- | --- |
+| 1–3 | Clean pasted text, clipboard text or a Markdown/CSV/TSV file |
+| 4–5 | Download data or import a downloaded offline address source |
+| 6 | Learn corrections from aligned original and approved tables |
+| 7–8 | Check installed capabilities or read address-source guidance |
+| 9 | Toggle address and email-domain lookups; LLM settings are separate |
+| 10 | Configure/disable LLM review, including Ollama installation and testing |
+| 11 | Toggle Homedata search; paused when option 9 is off |
+| 12 | Enter or replace a saved API key |
+| 13 | Approve, keep or defer flagged corrections |
+| 14 | Select the provisional address evidence tier: 0.99 default, 0.95 or 1.00 |
+| 15 | Delete cached lookup/LLM data, with confirmation |
+
 ## Features
 
+- Full-screen curses menus with arrow keys and vi navigation; numbered fallback
+  for terminals without curses.
 - Paste a Markdown table directly into the friendly desktop menu.
 - Wrap desktop-menu prompts and job-output logs to the live terminal width,
   including after the window is resized.
@@ -65,6 +98,17 @@ lookup result is not, by itself, proof that the transcription is wrong. The
 programme first decides whether a field is malformed, ambiguous or demonstrably
 incomplete; only then does it generate and assess replacements.
 
+Email OCR uses a separate rule set. A domain containing an invalid glyph can be
+repaired automatically when one known provider is reachable by a single OCR
+confusion, for example `person@gmai|.com` → `person@gmail.com`. Valid-looking
+domains such as `gmai1.com` or `grnail.com` are not silently rewritten: if DNS
+confirms a problem, a restricted `1/l/i`, `0/o`, `rn/m` or `vv/w` candidate is
+offered for approval. `mail.com`, `ymail.com` and functioning uncommon domains
+remain unchanged. Domain checks do not establish whether a mailbox exists.
+Ambiguous local-part substitutions and extra @ signs remain unresolved. DNS
+timeouts/SERVFAIL are reported as unavailable and are not cached as invalid;
+definitive domain results expire after 24 hours.
+
 1. **Preserve and normalise.** Trim repeated whitespace, remove recognised
    Markdown email wrappers and normalise harmless case or postcode spacing.
    Keep the supplied text available for both the audit and conservative
@@ -110,7 +154,8 @@ incomplete; only then does it generate and assess replacements.
    still checked locally for field syntax and premise preservation. It can be
    applied automatically only where the detector already found incomplete,
    invalid or explicitly bracketed input; changes to complete text remain
-   `review` suggestions.
+   `review` suggestions. Email proposals must also agree with deterministic email
+   repair; a model's confidence cannot establish a new mailbox identifier.
 8. **Learn only after approval.** The `learn` command compares a raw batch with
    a row-aligned approved batch and stores exact row, person and address
    corrections in the local SQLite memory. Future exact matches are labelled
@@ -130,7 +175,7 @@ The evidence used for each field is deliberately different:
 | Title/name | Explicit bracket alternatives; approved person matched by exact email | Unique delimiter-separated email evidence, or approved memory |
 | Address | Offline index, Doogal, Homedata, optional getAddress.io or Nominatim | Approved memory; harmless formatting; a unique strict completion preserving the premise; or one unique one-character correction with no premise contradiction. Street-only values stay unresolved. |
 | Postcode | UK syntax, bracket alternatives, offline postcode index and exact postcodes.io validation | Unique valid bracket/index result or exact canonical formatting; no fuzzy change to an already valid postcode |
-| Email | Wrapper removal, email syntax and explicit bracket alternatives | Harmless formatting or one unique syntactically valid bracket choice; uncommon domains are not similarity-rewritten |
+| Email | Wrapper removal, syntax, bracket alternatives and restricted domain OCR confusions | One unique repair of an invalid domain glyph; syntactically valid domain typos are review-only after DNS failure. Mailbox identifiers are preserved. |
 
 This design follows the established detector-then-corrector pattern for reducing
 false OCR changes and uses field-specific confusion sets rather than unrestricted
@@ -144,7 +189,7 @@ Results are written to `Documents/AddressMend`:
 - `cleaned_entries_<date-time>.tsv` — cleaned six-column output;
 - `review_report_<date-time>.tsv` — field-level explanations and review flags;
 - `approved_entries_<date-time>.tsv` — a new completed table produced by desktop
-  option **14** after approving flagged corrections;
+  option **13** after approving flagged corrections;
 - `approval_decisions_<date-time>.tsv` — the corresponding approve/keep/skip log;
 - `corrections_and_online_cache.sqlite` — approved corrections and cached
   lookups;
@@ -160,14 +205,19 @@ Paste the result into the first spreadsheet cell with Ctrl+V; Ctrl+C in the
 AddressMend console is an interrupt, not a clipboard-copy command.
 
 Every non-quiet batch ends with a row-level completion report. It assigns each
-row to exactly one final category—no correction needed, deterministic
+row to exactly one final category—no change or problem detected, deterministic
 rules/lookups, approved correction memory, LLM automatic completion, or still
 review/unresolved—and prints the count and percentage of the full batch. When an
-LLM is enabled, a second line reports the percentage sent to it and how many of
+LLM is enabled, a second line reports the percentage eligible for it (including
+cached responses and rows whose request failed) and how many of
 those rows were automatically changed, retained only as review suggestions, or
 left without a usable change. Rows that received both deterministic work and a
 final LLM completion are attributed to the LLM, so the five main categories do
 not double-count rows.
+
+Completion means no outstanding flags under the enabled rules. It is not a
+measurement of address or email accuracy. Measure accuracy separately against
+representative, independently approved records before changing the evidence tier.
 
 The friendly desktop menu measures the console width for every completed output
 line. Long explanations and job-log entries therefore wrap to the visible
@@ -212,7 +262,7 @@ AddressMend distinguishes a match score from a probability. `--address-threshold
 controls candidate retrieval and string agreement; it does **not** mean that a
 candidate has that probability of being correct. The separate
 `--auto-approve-threshold` controls promotion of otherwise provisional address
-suggestions. Desktop option **15** changes the same total threshold for the
+suggestions. Desktop option **14** changes the same total threshold for the
 current AddressMend session; it applies to pasted, clipboard and saved-file
 batches:
 
@@ -255,7 +305,7 @@ unique identifier for every UK addressable location:
 
 ### Approving flagged corrections in the programme
 
-Choose desktop option **14**, then drag in a `review_report_…tsv`. AddressMend
+Choose desktop option **13**, then drag in a `review_report_…tsv`. AddressMend
 finds the matching `cleaned_entries_…tsv` in the same folder and shows each
 provisional correction with its current value, suggestion and evidence. Choose:
 
@@ -334,9 +384,20 @@ Combining sources improves coverage but does not remove the need for review.
 
 ## Online services and privacy
 
+Option **15 — Delete cached lookup and LLM data** clears `online_cache` and
+`postcode_cache` in the displayed results database after confirmation. It preserves
+approved corrections, review decisions, API keys and saved TSVs. Subsequent runs
+may repeat lookups and incur API charges. Close other users of the database first.
+SQLite [secure deletion](https://www.sqlite.org/pragma.html#pragma_secure_delete)
+and [VACUUM](https://www.sqlite.org/lang_vacuum.html) remove deleted content from
+the active database; this does not guarantee physical erasure from SSDs, backups,
+synced copies or the providers' systems.
+
 The desktop menu and `clean` command start with the standard free online-assisted
-procedure enabled. Option **9** switches the desktop workflow to local-only
-processing. Command-line users can disable individual services with
+procedure enabled. Option **9** disables the desktop address and DNS lookups.
+LLM endpoints and Ollama web search are configured separately in option **10**;
+disable those too for a fully offline run, or use a loopback Ollama server with
+a downloaded model and web evidence disabled. Command-line users can disable individual services with
 `--no-doogal`, `--no-online-validate`, `--no-validate-email-domains`,
 `--no-nominatim` and `--no-homedata`.
 
@@ -381,12 +442,15 @@ accepts three provider modes:
 All high-probability deterministic corrections described above run when LLM
 fallback is off. An LLM is not required for automatic correction.
 
-Desktop users can select menu option **10** to configure a provider. Option
-**12** detects installed memory, recommends a local model, installs Ollama through
-Windows Package Manager with confirmation when available, and downloads the
-chosen model with confirmation. Before downloading, it runs `ollama list`, shows
-already-installed models from known general-purpose reviewer families and prefers
-a suitable installed model. Option **13** directly enters or replaces OpenAI,
+Desktop users can select menu option **10** to configure OpenAI, another compatible
+provider or local Ollama. Choosing Ollama there detects installed memory, recommends
+a local model, installs Ollama through Windows Package Manager with confirmation
+when available, and downloads the chosen model with confirmation. It checks the
+selected server through `/api/tags`, offers to start a stopped local service,
+and lists downloaded models before offering a download. It prefers a recognised
+chat-model family that fits the RAM heuristic, then tests structured JSON with a
+synthetic record. Setup failure or cancellation retains the previous provider.
+Option **12** directly enters or replaces OpenAI,
 Ollama web-search, getAddress.io or custom provider keys. On Windows, macOS and
 Linux, key entry uses a hidden prompt and makes the value available to the
 current run immediately. Windows persists it for the current user through
@@ -405,6 +469,25 @@ of system memory is available, `qwen3:8b` (5.2 GB) for 12–23 GB, and
 Windows and the rest of the application also need memory. The user may type a
 different Ollama model instead.
 
+Model selection is a RAM-based starting point, not a measured quality or speed
+ranking. GPU memory, quantisation and other running applications also matter.
+Ollama defaults to **one row per request and a 300-second timeout**; other
+providers retain ten rows and 120 seconds. Override these with
+`--llm-batch-size` and `--llm-timeout` (maximum 600 seconds). The menu tests the
+server and model before enabling Ollama; it does not measure address accuracy.
+
+The request follows Ollama's [structured-output procedure](https://docs.ollama.com/capabilities/structured-outputs):
+JSON schema in the request and prompt, with temperature zero. Local requests use
+an 8,192-token context. Qwen3 thinking is disabled and GPT-OSS uses low thinking
+effort to reduce latency. Cloud-tagged models are excluded because Ollama Cloud
+does not support the required schema. If a request fails, the error identifies
+the model and endpoint and deterministic results are still saved.
+
+If Ollama cannot connect, open its desktop application or run `ollama serve`,
+then choose **Configure LLM / Ollama → Set up or test Ollama**. The configured
+URL, model discovery and downloads all target the same server. A URL ending in
+`/api` is accepted and normalised. See the [Ollama CLI reference](https://docs.ollama.com/cli).
+
 ```sh
 # OpenAI (API billing is separate from a ChatGPT subscription)
 export OPENAI_API_KEY='...'
@@ -417,7 +500,7 @@ export LLM_API_KEY='...'
   --llm-provider compatible --llm-base-url https://llm.example/v1 \
   --llm-model provider-model
 
-# Local Ollama; menu option 12 can install and select this automatically
+# Local Ollama; menu option 10 can install and select this automatically
 ollama pull gpt-oss:20b
 ./addressmend.py clean input.tsv -o output.tsv --audit review.tsv \
   --memory corrections.sqlite --llm-provider ollama --llm-model gpt-oss:20b
