@@ -50,3 +50,6 @@ issue.
 
 The programme performs no telemetry and has no automatic update mechanism.
 Network lookups occur only when the corresponding online options are enabled.
+Interactive Windows menus may install missing `windows-curses` from the configured
+pip index. Set `ADDRESSMEND_NO_CURSES=1` to disable this dependency installation
+and use text menus; command-line cleaning does not install packages.
