@@ -3,7 +3,7 @@
 ## Supported version
 
 Security and privacy fixes are applied to the latest release of AddressMend.
-At present that is version 1.6.x.
+At present that is version 1.7.x.
 
 ## Reporting a vulnerability
 
@@ -21,7 +21,7 @@ issue.
 - Do not commit test cases copied from real contact records.
 - Store API keys in environment variables or through AddressMend's hidden guided
   entry, not source files or command history.
-- On Windows, guided provider setup and menu option 13 may persist API keys in
+- On Windows, guided provider setup and menu option 12 may persist API keys in
   the current user's environment through PowerShell `setx`. Entry is hidden and
   passed through standard input, but software running as that Windows user can
   retrieve it.
@@ -34,6 +34,10 @@ issue.
   the configured endpoint. Use loopback Ollama when records must remain local.
 - Remember that the local LLM cache can contain names, addresses and email
   addresses even though its lookup key is hashed.
+- Menu option 15 deletes lookup/LLM cache rows using SQLite `secure_delete=ON`
+  and `VACUUM`, removing prior WAL content by switching to a rollback journal.
+  It preserves approved corrections and review decisions. It is not forensic
+  erasure of SSD blocks, backups, exported TSVs, synced copies or provider data.
 - The correction-memory SQLite database and `approval_decisions_…tsv` files can
   contain current and suggested addresses plus the operator's decisions. Treat
   them as contact data and do not attach them to public issues or commits.
