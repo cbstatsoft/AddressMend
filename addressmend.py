@@ -7482,7 +7482,11 @@ def _friendly_curses_screen(
     while True:
         screen.erase()
         height, width = screen.getmaxyx()
-        if height < 10 or width < 24:
+        notice = textwrap.wrap(COPYRIGHT, max(1, width - 1)) + textwrap.wrap(
+            "GNU GPL version 3 or later; no warranty.", max(1, width - 1)
+        )
+        menu_start = len(notice) + 3
+        if height < menu_start + 7 or width < 24:
             _curses_write(screen, 0, 0, "Enlarge window; Q exits", width)
             screen.refresh()
             key = screen.getch()
@@ -7491,14 +7495,16 @@ def _friendly_curses_screen(
             if key == -1:
                 raise EOFError("Terminal input closed")
             continue
-        visible_rows = max(1, height - 9)
+        visible_rows = max(1, height - menu_start - 6)
         first = max(0, min(selected - visible_rows // 2, len(items) - visible_rows))
         last = min(len(items), first + visible_rows)
 
         _curses_write(screen, 0, 0, f"ADDRESSMEND {VERSION}", width, curses.A_BOLD)
-        _curses_write(screen, 1, 0, f"Results: {results_dir}", width)
-        _curses_write(screen, 2, 0, title, width, curses.A_BOLD)
-        for row, item_index in enumerate(range(first, last), start=3):
+        for row, line in enumerate(notice, start=1):
+            _curses_write(screen, row, 0, line, width)
+        _curses_write(screen, menu_start - 2, 0, f"Results: {results_dir}", width)
+        _curses_write(screen, menu_start - 1, 0, title, width, curses.A_BOLD)
+        for row, item_index in enumerate(range(first, last), start=menu_start):
             _key, label = items[item_index]
             marker = ">" if item_index == selected else " "
             text = f" {marker} {label}"
