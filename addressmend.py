@@ -114,7 +114,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, Sequence, TextIO
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 DEFAULT_REVIEW_THRESHOLD = 0.95
 DEFAULT_AUTO_APPROVE_THRESHOLD = 0.99
 COPYRIGHT = "Copyright (C) 2026 Connor Baird"
@@ -123,7 +123,7 @@ UK_POSTCODE_RE = re.compile(
     r"^(?:GIR 0AA|(?:[A-Z][A-HJ-Y]?\d[A-Z\d]?|[A-Z][A-HJ-Y]?\d{1,2}) \d[ABD-HJLNP-UW-Z]{2})$"
 )
 EMAIL_RE = re.compile(
-    r"^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"^(?!\.)(?![^@]*\.\.)[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+(?<!\.)@"
     r"[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?"
     r"(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+$",
     re.I,
@@ -361,27 +361,12 @@ def unwrap_email(value: str) -> str:
     value = re.sub(r"\s*(?:\(at\)|\[at\])\s*", "@", value, flags=re.I)
     value = re.sub(r"\s*(?:\(dot\)|\[dot\])\s*", ".", value, flags=re.I)
     value = value.strip(" <>\"'\t\r\n")
-    if value.count("@") > 1:
-        parts = value.split("@")
-        possible_domain = parts[-1].replace(",", ".").replace(" ", "").lower()
-        middle = parts[1:-1]
-        # OCR sometimes turns a separator in the local part into a second @,
-        # for example name@1112@yahoo.com. Only repair structurally safe tokens.
-        if (
-            middle
-            and all(re.fullmatch(r"[A-Z0-9._+-]+", part, re.I) for part in middle)
-            and any(
-                levenshtein(possible_domain, domain) <= 1 for domain in COMMON_DOMAINS
-            )
-        ):
-            value = "".join(parts[:-1]) + "@" + parts[-1]
     if value.count("@") == 1:
         local, domain = value.rsplit("@", 1)
         local = re.sub(r"\s+", "", local)
         domain = (
             domain.replace(",", ".")
             .replace(";", ".")
-            .replace("|", "l")
             .replace(" ", "")
             .lower()
             .strip(".")
@@ -396,11 +381,33 @@ def _clean_email_candidate(value: str) -> tuple[str, str | None]:
         return "", None
     if value.count("@") != 1:
         return value, "malformed email"
+    local, domain = value.rsplit("@", 1)
+    if not EMAIL_RE.fullmatch(value):
+        candidates = email_ocr_domains(domain)
+        # Invalid domain glyphs plus one recognised provider give field-specific
+        # evidence. Never infer or rewrite the mailbox identifier before @.
+        if len(candidates) == 1 and EMAIL_RE.fullmatch(f"{local}@{candidates[0]}"):
+            return f"{local}@{candidates[0]}", None
     # A syntactically valid domain may be uncommon (mail.com, ymail.com or an
     # organisation's own domain). Edit distance alone is not evidence that it
     # should be changed to Gmail or another large provider. Online domain
     # validation flags non-resolving domains later without altering the email.
     return value, None if EMAIL_RE.fullmatch(value) else "malformed email"
+
+
+def email_ocr_domains(domain: str) -> list[str]:
+    """Generate common-provider candidates using one known OCR confusion only."""
+    domain = domain.casefold()
+    confusions = (("0", "o"), ("1", "l"), ("1", "i"), ("|", "l"),
+                  ("|", "i"), ("rn", "m"), ("vv", "w"))
+    candidates: set[str] = set()
+    for left, right in confusions:
+        for old, new in ((left, right), (right, left)):
+            for match in re.finditer(re.escape(old), domain):
+                candidate = domain[:match.start()] + new + domain[match.end():]
+                if candidate in COMMON_DOMAINS:
+                    candidates.add(candidate)
+    return sorted(candidates - {domain})
 
 
 def clean_email(value: str) -> tuple[str, str | None]:
@@ -434,7 +441,9 @@ def email_change_reason(original: str, cleaned: str) -> str:
     raw_domain = raw.rsplit("@", 1)[-1].casefold() if "@" in raw else ""
     clean_domain = cleaned.rsplit("@", 1)[-1].casefold() if "@" in cleaned else ""
     if raw_domain != clean_domain:
-        return "normalised punctuation or uniquely matched a common email domain"
+        if clean_domain in email_ocr_domains(raw_domain):
+            return "repaired invalid domain glyph using one unique common-provider OCR match; mailbox unchanged"
+        return "normalised email domain punctuation and case"
     return "email OCR and escaping normalisation"
 
 
@@ -463,12 +472,17 @@ def uncommon_email_domain_status(
 
     if cache:
         row = cache.execute(
-            "SELECT payload FROM online_cache WHERE provider='google-dns-email' AND query=?",
-            (query,),
+            "SELECT payload FROM online_cache WHERE provider='google-dns-email-v2' "
+            "AND query=? AND checked_at>?",
+            (query, int(time.time()) - 86400),
         ).fetchone()
         if row:
-            saved = json.loads(row[0])
-            return str(saved["status"]), str(saved["reason"])
+            try:
+                saved = json.loads(row[0])
+                if saved["status"] in {"valid", "invalid"}:
+                    return str(saved["status"]), str(saved["reason"])
+            except (ValueError, KeyError, TypeError):
+                pass
 
     status = "unavailable"
     reason = (
@@ -482,7 +496,7 @@ def uncommon_email_domain_status(
         if int(mx.get("Status", -1)) == 3:
             status = "invalid"
             reason = "uncommon email domain does not exist (DNS NXDOMAIN)"
-        else:
+        elif int(mx.get("Status", -1)) == 0:
             mx_answers = [
                 answer
                 for answer in mx.get("Answer", [])
@@ -504,6 +518,7 @@ def uncommon_email_domain_status(
             else:
                 # RFC mail delivery permits an address-record fallback when MX
                 # is absent, so do not reject a domain solely for missing MX.
+                definitive = True
                 for record_type in ("A", "AAAA"):
                     url = "https://dns.google/resolve?" + urllib.parse.urlencode(
                         {
@@ -514,7 +529,12 @@ def uncommon_email_domain_status(
                         }
                     )
                     answer = http_json(url)
-                    if int(answer.get("Status", -1)) == 0 and answer.get("Answer"):
+                    response_status = int(answer.get("Status", -1))
+                    definitive = definitive and response_status in {0, 3}
+                    expected_type = 1 if record_type == "A" else 28
+                    if response_status == 0 and any(
+                        item.get("type") == expected_type for item in answer.get("Answer", [])
+                    ):
                         status = "valid"
                         reason = (
                             "uncommon email domain has no MX record but has a DNS "
@@ -522,8 +542,9 @@ def uncommon_email_domain_status(
                         )
                         break
                 else:
-                    status = "invalid"
-                    reason = "uncommon email domain has no MX, A or AAAA DNS record"
+                    if definitive:
+                        status = "invalid"
+                        reason = "uncommon email domain has no MX, A or AAAA DNS record"
     except (urllib.error.URLError, TimeoutError, ValueError, KeyError, TypeError):
         pass
 
@@ -531,7 +552,7 @@ def uncommon_email_domain_status(
         payload = json.dumps({"status": status, "reason": reason})
         with cache:
             cache.execute(
-                "INSERT OR REPLACE INTO online_cache VALUES('google-dns-email',?,?,?)",
+                "INSERT OR REPLACE INTO online_cache VALUES('google-dns-email-v2',?,?,?)",
                 (query, payload, int(time.time())),
             )
     return status, reason
@@ -551,6 +572,17 @@ def audit_uncommon_email_domain(
     status, reason = result
     confidence = "verified" if status == "valid" else "unresolved"
     audit.append(Audit(row, "email_domain", domain, domain, confidence, reason))
+    if status == "invalid":
+        local = record.email.rsplit("@", 1)[0]
+        candidates = email_ocr_domains(domain)
+        for candidate in candidates:
+            audit.append(Audit(
+                row, "email", record.email, f"{local}@{candidate}", "review",
+                "possible domain OCR confusion; original domain failed DNS; "
+                "confirm against the source document (DNS cannot verify a mailbox)",
+            ))
+        if not candidates:
+            audit.append(Audit(row, "email", record.email, record.email, "unresolved", reason))
 
 
 def split_markdown_row(line: str) -> list[str] | None:
@@ -3404,6 +3436,10 @@ def llm_config(args: argparse.Namespace) -> LLMConfig | None:
     default_model, default_url, default_key_env = defaults[provider]
     model = squash(getattr(args, "llm_model", None) or default_model)
     base_url = squash(getattr(args, "llm_base_url", None) or default_url)
+    if provider == "ollama":
+        base_url = base_url.rstrip("/").removesuffix("/api")
+        if "cloud" in model.casefold() or urllib.parse.urlsplit(base_url).hostname == "ollama.com":
+            raise SystemExit("Use a downloaded local Ollama model; Ollama Cloud does not support the required JSON schema")
     if not model:
         raise SystemExit(f"--llm-model is required for provider {provider}")
     if not base_url:
@@ -3411,12 +3447,14 @@ def llm_config(args: argparse.Namespace) -> LLMConfig | None:
     key_env_option = getattr(args, "llm_key_env", None)
     key_env = key_env_option if key_env_option is not None else default_key_env
     api_key = os.environ.get(key_env, "") if key_env else ""
-    if (provider == "openai" or key_env_option is not None) and not api_key:
+    if (provider == "openai" or bool(key_env_option)) and not api_key:
         raise SystemExit(f"LLM API key environment variable {key_env!r} is empty")
-    batch_size = int(getattr(args, "llm_batch_size", 10))
+    batch_option = getattr(args, "llm_batch_size", None)
+    batch_size = int(batch_option if batch_option is not None else (1 if provider == "ollama" else 10))
     if not 1 <= batch_size <= 50:
         raise SystemExit("--llm-batch-size must be between 1 and 50")
-    timeout = float(getattr(args, "llm_timeout", 120.0))
+    timeout_option = getattr(args, "llm_timeout", None)
+    timeout = float(timeout_option if timeout_option is not None else (300 if provider == "ollama" else 120))
     if not 1 <= timeout <= 600:
         raise SystemExit("--llm-timeout must be between 1 and 600 seconds")
     ollama_web_search = bool(
@@ -3671,23 +3709,37 @@ def llm_request(config: LLMConfig, rows: list[dict[str, object]]) -> dict[str, o
         )
         text = openai_output_text(response)
     elif config.provider == "ollama":
-        response = post_json(
-            f"{config.base_url}/api/chat",
-            {
+        payload = {
                 "model": config.model,
                 "stream": False,
                 "format": schema,
+                "options": {"temperature": 0, "num_ctx": 8192},
                 "messages": [
-                    {"role": "system", "content": LLM_INSTRUCTIONS},
+                    {"role": "system", "content": LLM_INSTRUCTIONS + "\nJSON schema: " + json.dumps(schema)},
                     {"role": "user", "content": user_input},
                 ],
-            },
-            config,
-        )
+        }
+        family = config.model.casefold().split(":", 1)[0].rsplit("/", 1)[-1]
+        if family == "gpt-oss":
+            payload["think"] = "low"
+        elif family == "qwen3":
+            payload["think"] = False
+        try:
+            response = post_json(f"{config.base_url}/api/chat", payload, config)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"Ollama model {config.model!r} at {config.base_url}: {exc}. "
+                "Use Configure LLM / Ollama to check the server and model; "
+                "for slow hardware, increase --llm-timeout (maximum 600)."
+            ) from exc
+        if response.get("error"):
+            raise RuntimeError(f"Ollama error: {response['error']}")
+        if response.get("done_reason") == "length":
+            raise RuntimeError("Ollama stopped at its output limit; reduce the batch size or use another model")
         message = response.get("message")
         text = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(text, str):
-            raise RuntimeError("Ollama response contained no message content")
+        if not isinstance(text, str) or not text.strip():
+            raise RuntimeError("Ollama returned no final answer; update Ollama or select another model")
     else:
         response = post_json(
             f"{config.base_url}/chat/completions",
@@ -3794,7 +3846,7 @@ def cached_llm_result(
     rows: list[dict[str, object]],
 ) -> dict[str, object]:
     cache_material = json.dumps(
-        {"prompt": 3, "model": config.model, "rows": rows},
+        {"prompt": 4, "model": config.model, "rows": rows},
         ensure_ascii=False,
         sort_keys=True,
     )
@@ -3855,6 +3907,7 @@ def apply_llm_fallback(
     llm_progress.__enter__()
     for start in range(0, len(requests), config.batch_size):
         batch = requests[start : start + config.batch_size]
+        batch_rows = {entry["row"] for entry in batch}
         try:
             llm_batch = augment_ollama_web_evidence(batch, memory, config, quiet)
             result = cached_llm_result(memory, config, llm_batch)
@@ -3869,10 +3922,10 @@ def apply_llm_fallback(
             llm_progress.clear()
         seen_rows: set[int] = set()
         for item in result_rows:
-            if not isinstance(item, dict) or not isinstance(item.get("row"), int):
+            if not isinstance(item, dict) or type(item.get("row")) is not int:
                 continue
             row_number = item["row"]
-            if row_number in seen_rows or row_number not in allowed:
+            if row_number in seen_rows or row_number not in batch_rows:
                 continue
             seen_rows.add(row_number)
             record = output[row_number - 1]
@@ -3889,6 +3942,7 @@ def apply_llm_fallback(
                     not isinstance(field, str)
                     or field not in allowed[row_number]
                     or field in seen_fields
+                    or not isinstance(confidence, str)
                     or confidence not in {"high", "review", "abstain"}
                 ):
                     continue
@@ -3919,6 +3973,11 @@ def apply_llm_fallback(
                 if value == current:
                     continue
                 can_apply = confidence == "high" and llm_can_apply_automatically(field, current)
+                if field == "email" and can_apply:
+                    # Neither DNS nor an LLM's confidence proves a new mailbox.
+                    # Automatic email changes must agree with deterministic repair.
+                    repaired, problem = clean_email(current)
+                    can_apply = problem is None and repaired == value
                 if can_apply:
                     audit[:] = [
                         event
@@ -4046,11 +4105,11 @@ def print_batch_completion_report(
 
     completed = row_count - categories["outstanding"]
     print(
-        f"batch completion: {completed}/{row_count} rows ({percentage(completed):.1f}%)",
+        f"batch completion (no outstanding flags): {completed}/{row_count} rows ({percentage(completed):.1f}%)",
         file=sys.stderr,
     )
     labels = (
-        ("no correction needed", "no_correction_needed"),
+        ("no change or problem detected", "no_correction_needed"),
         ("deterministic rules/lookups", "deterministic"),
         ("approved correction memory", "learned"),
         ("LLM automatic completion", "llm"),
@@ -4066,9 +4125,9 @@ def print_batch_completion_report(
         requested = llm_stats.requested_rows
         status = "; provider request failed" if llm_stats.failed else ""
         print(
-            f"  LLM rows sent: {requested}/{row_count} ({percentage(requested):.1f}%); "
+            f"  LLM-eligible rows (including cache): {requested}/{row_count} ({percentage(requested):.1f}%); "
             f"auto-changed {llm_stats.automatically_changed_rows}/{requested} "
-            f"({percentage(llm_stats.automatically_changed_rows, requested):.1f}% of sent); "
+            f"({percentage(llm_stats.automatically_changed_rows, requested):.1f}% of eligible); "
             f"review-only {llm_stats.review_only_rows}; "
             f"no usable change {llm_stats.no_change_rows}{status}",
             file=sys.stderr,
@@ -4742,6 +4801,78 @@ def download_command(args: argparse.Namespace) -> int:
 
 def self_test() -> int:
     from unittest.mock import patch
+
+    # Preserve mailbox identifiers and valid uncommon domains during OCR repair.
+    assert clean_email("person@gmai|.com") == ("person@gmail.com", None)
+    for email in ("person@gmai1.com", "person@mail.com", "person@ymail.com", "p0rn@example.org"):
+        assert clean_email(email) == (email, None)
+    for email in ("name@1112@yahoo.com", ".person@gmail.com", "person..name@gmail.com"):
+        assert clean_email(email) == (email, "malformed email")
+    assert email_ocr_domains("grnail.com") == ["gmail.com"]
+    dns_memory = connect_memory(":memory:")
+    try:
+        for replies in ([{"Status": 2}], [{"Status": 0}, {"Status": 2}, {"Status": 2}]):
+            with patch(__name__ + ".http_json", side_effect=replies):
+                assert uncommon_email_domain_status("person@gmai1.com", dns_memory)[0] == "unavailable"
+        assert dns_memory.execute("SELECT count(*) FROM online_cache").fetchone()[0] == 0
+        with patch(__name__ + ".http_json", return_value={"Status": 3}):
+            domain_audit = []
+            domain_record = Record(email="person@gmai1.com")
+            audit_uncommon_email_domain(domain_record, 1, domain_audit, dns_memory)
+        assert domain_record.email == "person@gmai1.com"
+        assert any(a.field == "email" and a.cleaned == "person@gmail.com" and a.confidence == "review" for a in domain_audit)
+        with patch(__name__ + ".http_json") as dns_request:
+            assert uncommon_email_domain_status(domain_record.email, dns_memory)[0] == "invalid"
+            dns_request.assert_not_called()
+    finally:
+        dns_memory.close()
+
+    # Exercise deletion against a real WAL database, including overflow pages.
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "cache.sqlite"
+        db = connect_memory(str(path))
+        db.execute("PRAGMA journal_mode=WAL")
+        marker = "cached-private-marker-837" * 1000
+        with db:
+            db.execute("INSERT INTO online_cache VALUES(?,?,?,?)", ("llm-test", "query", marker, 0))
+            db.execute("INSERT INTO postcode_cache VALUES(?,?,?)", ("query", "value", 0))
+            db.execute("INSERT INTO record_overrides VALUES(?,?,?)", ("approved", "[]", 0))
+            db.execute("INSERT INTO review_decisions VALUES(?,?,?,?,?,?,?)", (0, 1, "email", "a", "b", "approved", "kept"))
+        db.close()
+        assert secure_delete_lookup_cache(path) == 2
+        db = sqlite3.connect(path)
+        try:
+            assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert db.execute("SELECT count(*) FROM record_overrides").fetchone()[0] == 1
+            assert db.execute("SELECT count(*) FROM review_decisions").fetchone()[0] == 1
+            assert db.execute("SELECT count(*) FROM online_cache").fetchone()[0] == 0
+        finally:
+            db.close()
+        assert b"cached-private-marker-837" not in path.read_bytes()
+        assert not Path(str(path) + "-wal").exists()
+
+    cfg = llm_config(parser().parse_args([
+        "clean", "input.tsv", "--llm-provider", "ollama", "--llm-model", "qwen3:4b",
+        "--llm-base-url", "http://localhost:11434/api/",
+    ]))
+    assert cfg.batch_size == 1 and cfg.timeout == 300
+    assert cfg.base_url == "http://localhost:11434"
+    with patch(__name__ + ".post_json", return_value={"message": {"content": '{"rows": []}'}}) as post:
+        assert llm_request(cfg, []) == {"rows": []}
+        payload = post.call_args.args[1]
+        assert payload["think"] is False and payload["options"]["temperature"] == 0
+    with patch(__name__ + ".post_json", return_value={"error": "model missing"}):
+        try:
+            llm_request(cfg, [])
+        except RuntimeError as exc:
+            assert "model missing" in str(exc)
+        else:
+            raise AssertionError("Ollama error was not reported")
+    current = {"llm_provider": "ollama", "llm_model": "example"}
+    with patch(__name__ + ".friendly_select", return_value="b"), patch("builtins.print"):
+        assert friendly_llm_configuration(current) is current
+    with patch(__name__ + ".friendly_select", return_value="2"), patch(__name__ + ".friendly_setup_ollama", side_effect=RuntimeError("offline")), patch("builtins.print"):
+        assert friendly_llm_configuration(current) is current
 
     log_line = "Job output: checking a deliberately long unresolved address record"
     narrow_log = window_wrap_line(log_line, 28)
@@ -5675,9 +5806,9 @@ def doctor(args: argparse.Namespace) -> int:
 
     ollama = find_ollama_executable()
     ollama_status = (
-        f"ready at {ollama}"
+        f"executable found at {ollama}; use option 10 to test the server and model"
         if ollama
-        else "not found; menu option 12 can install it"
+        else "executable not found; menu option 10 offers installation"
     )
     print(f"  Local Ollama: {ollama_status}")
 
@@ -6247,7 +6378,7 @@ def friendly_clean(
             "Online searches are deliberately made one at a time and may take a while."
         )
     else:
-        print("Internet lookups are OFF: this batch will use local sources only.")
+        print("Address and DNS lookups are OFF. The separately configured LLM may still use a network endpoint.")
     if llm_settings:
         print(
             "LLM fallback is ON: unresolved complete contact rows will be sent to "
@@ -6296,8 +6427,8 @@ def friendly_clean(
         llm_base_url=(llm_settings or {}).get("llm_base_url"),
         llm_key_env=(llm_settings or {}).get("llm_key_env"),
         ollama_web_search=(llm_settings or {}).get("ollama_web_search", True),
-        llm_batch_size=10,
-        llm_timeout=120.0,
+        llm_batch_size=(llm_settings or {}).get("llm_batch_size"),
+        llm_timeout=(llm_settings or {}).get("llm_timeout"),
         address_threshold=0.84,
         auto_approve_threshold=auto_approve_threshold,
         auto_name=True,
@@ -6813,7 +6944,7 @@ def system_memory_gib() -> float | None:
 def recommended_ollama_model(memory_gib: float | None) -> tuple[str, str]:
     """Choose a useful local structured-output model with RAM headroom."""
     if memory_gib is not None and memory_gib >= 24:
-        return "gpt-oss:20b", "14 GB download; strongest recommended local reviewer"
+        return "gpt-oss:20b", "about 14 GB download; larger local model (quality not benchmarked here)"
     if memory_gib is not None and memory_gib >= 12:
         return "qwen3:8b", "5.2 GB download; balanced local reviewer"
     return "qwen3:4b", "2.5 GB download; compact local reviewer"
@@ -6856,6 +6987,62 @@ def installed_ollama_models(executable: str) -> list[str]:
     return models
 
 
+def ollama_server_models(base_url: str, timeout: float = 3.0) -> list[str]:
+    """Check the selected server, distinguishing an empty model list from failure."""
+    base_url = validated_llm_base_url(base_url).removesuffix("/api")
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    try:
+        opener = urllib.request.build_opener(NoRedirect())
+        with opener.open(f"{base_url}/api/tags", timeout=timeout) as response:
+            raw = response.read(1_000_001)
+        if len(raw) > 1_000_000:
+            raise ValueError("model list exceeds 1 MB")
+        data = json.loads(raw)
+        if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+            raise ValueError("no models list; this may not be an Ollama server")
+        return [model["name"] for model in data["models"]
+                if isinstance(model, dict) and isinstance(model.get("name"), str)]
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Cannot read Ollama models at {base_url}: {exc}") from exc
+
+
+def ollama_model_name(model: str) -> str:
+    return model if ":" in model.rsplit("/", 1)[-1] else model + ":latest"
+
+
+def start_local_ollama(executable: str, base_url: str) -> list[str]:
+    """Start a loopback server and wait briefly; keep a reference to its process."""
+    parsed = urllib.parse.urlsplit(base_url)
+    if parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"} or parsed.path:
+        raise RuntimeError("Automatic startup is available only for a local HTTP Ollama server")
+    environment = dict(os.environ, OLLAMA_HOST=base_url)
+    options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
+    process = subprocess.Popen(
+        [executable, "serve"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, env=environment, **options,
+    )
+    # The server is intentionally left running for subsequent batches. Keeping
+    # its handle avoids treating a live child as a discarded Popen object.
+    _OLLAMA_SERVERS.append(process)
+    last_error = "server did not become ready"
+    for _attempt in range(20):
+        try:
+            return ollama_server_models(base_url, timeout=0.5)
+        except RuntimeError as exc:
+            last_error = str(exc)
+        if process.poll() is not None:
+            break
+        time.sleep(0.25)
+    raise RuntimeError(last_error + "; open the Ollama application or run 'ollama serve', then retry")
+
+
+_OLLAMA_SERVERS: list[subprocess.Popen] = []
+
+
 def ollama_model_billions(model: str) -> float | None:
     match = re.search(r"(?:^|[:-])(\d+(?:\.\d+)?)b(?:$|[-_])", model, re.I)
     return float(match.group(1)) if match else None
@@ -6868,6 +7055,8 @@ def suitable_installed_ollama_models(
     families = ("gpt-oss", "qwen3", "llama3", "gemma4", "gemma3", "mistral")
     suitable = []
     for model in models:
+        if "cloud" in model.casefold():
+            continue
         if not model.casefold().split(":", 1)[0].startswith(families):
             continue
         billions = ollama_model_billions(model)
@@ -6929,8 +7118,19 @@ def friendly_setup_ollama() -> dict[str, object] | None:
     print()
     print("SET UP FREE LOCAL OLLAMA")
     print("Ollama runs the second-stage reviewer on this computer without an API key.")
+    base_url = input("Ollama server URL [http://localhost:11434]: ").strip() or "http://localhost:11434"
+    base_url = validated_llm_base_url(base_url).removesuffix("/api")
+    local = urllib.parse.urlsplit(base_url).hostname in {"localhost", "127.0.0.1", "::1"}
     executable = find_ollama_executable()
-    if not executable and os.name == "nt" and shutil.which("winget.exe"):
+    try:
+        installed = ollama_server_models(base_url)
+    except RuntimeError as exc:
+        print(exc)
+        installed = None
+    if installed is None and not local:
+        print("Start or repair the selected server and try again. Configuration was not changed.")
+        return None
+    if installed is None and not executable and os.name == "nt" and shutil.which("winget.exe"):
         if friendly_yes_no("Install Ollama now with Windows Package Manager?"):
             completed = subprocess.run(
                 [
@@ -6948,7 +7148,7 @@ def friendly_setup_ollama() -> dict[str, object] | None:
                 executable = find_ollama_executable()
             else:
                 print("Windows Package Manager did not complete the installation.")
-    if not executable:
+    if installed is None and not executable:
         url = (
             "https://ollama.com/download/windows"
             if os.name == "nt"
@@ -6960,13 +7160,17 @@ def friendly_setup_ollama() -> dict[str, object] | None:
         print("Install Ollama, then return to this option to download the model.")
         return None
 
+    if installed is None:
+        if not friendly_yes_no("Start the local Ollama service now? It will stay running for later batches."):
+            return None
+        installed = start_local_ollama(executable, base_url)
+
     memory_gib = system_memory_gib()
     model, description = recommended_ollama_model(memory_gib)
     if memory_gib is not None:
         print(f"Detected memory: {memory_gib:.1f} GB")
     else:
         print("Installed memory could not be detected; the compact model is safest.")
-    installed = installed_ollama_models(executable)
     suitable = suitable_installed_ollama_models(installed, memory_gib)
     if suitable:
         print("Suitable models already installed:")
@@ -6981,45 +7185,75 @@ def friendly_setup_ollama() -> dict[str, object] | None:
         )
     print(f"Recommended model: {model} ({description})")
     chosen = input(f"Model [{model}]: ").strip() or model
-    if chosen not in installed:
+    if chosen.startswith("-") or "cloud" in chosen.casefold():
+        print("Choose a downloaded chat model, not a command option or cloud model.")
+        return None
+    if ollama_model_name(chosen) not in {ollama_model_name(name) for name in installed}:
+        if not executable or not local:
+            print("Download this model on the selected Ollama server, then retry.")
+            return None
         print("The model download can take several minutes and uses several gigabytes.")
         if not friendly_yes_no(f"Download and configure {chosen} now?"):
             print("No model was downloaded.")
             return None
         try:
-            completed = subprocess.run([executable, "pull", chosen], check=False)
+            completed = subprocess.run(
+                [executable, "pull", chosen], check=False,
+                env=dict(os.environ, OLLAMA_HOST=base_url),
+            )
         except OSError as exc:
             print(f"Ollama could not be started: {exc}")
             return None
         if completed.returncode != 0:
             print("Ollama did not finish downloading the model.")
             return None
-    print(f"Ollama model {chosen} is selected for unresolved rows.")
+        if ollama_model_name(chosen) not in {ollama_model_name(name) for name in ollama_server_models(base_url)}:
+            print("The downloaded model is not listed on this server; configuration was not changed.")
+            return None
+    config = LLMConfig("ollama", chosen, base_url, "", 300.0, 1, False, "")
+    print("Testing structured JSON with a synthetic record (first load may take up to 300 seconds)...")
+    llm_request(config, [{"row": 1, "record": dict.fromkeys(FIELD_NAMES, ""), "issues": []}])
+    print("Structured JSON test passed. This checks communication, not correction accuracy.")
     web_search = friendly_ollama_web_search()
     return {
         "llm_provider": "ollama",
         "llm_model": chosen,
-        "llm_base_url": None,
+        "llm_base_url": base_url,
         "llm_key_env": None,
         "ollama_web_search": web_search,
     }
 
 
-def friendly_llm_configuration() -> dict[str, object] | None:
+def friendly_llm_configuration(current: dict[str, object] | None = None) -> dict[str, object] | None:
+    """Keep the active provider if setup is cancelled or fails."""
+    try:
+        return _friendly_llm_configuration(current)
+    except (OSError, RuntimeError, ValueError, SystemExit) as exc:
+        print(f"LLM setup failed: {exc}")
+        print("Previous LLM settings retained.")
+        return current
+
+
+def _friendly_llm_configuration(current: dict[str, object] | None) -> dict[str, object] | None:
     print()
     print("OPTIONAL LLM FALLBACK")
     print("This runs only after normal cleaning cannot resolve a field.")
-    print(
-        "A provider receives the complete unresolved row: title, names, address, "
-        "postcode and email. API use may cost money."
-    )
-    print("  0  Off")
-    print("  1  OpenAI API")
-    print("  2  Local Ollama")
-    print("  3  Other OpenAI-compatible API")
-    choice = input("Provider: ").strip()
-    if choice in {"", "0"}:
+    choice = friendly_select("LLM / Ollama", [
+        ("0", "Turn LLM review off"),
+        ("1", "Configure OpenAI API"),
+        ("2", "Set up or test Ollama (server, model and optional web search)"),
+        ("3", "Configure an OpenAI-compatible API"),
+        ("b", "Back — keep current settings"),
+    ])
+    if choice == "0":
         return None
+    if choice in {"", "b"}:
+        return current
+    print(
+        "The selected model receives each unresolved six-field row, including names "
+        "and email. Remote APIs may charge for use. A local downloaded Ollama model "
+        "runs on your computer; its optional web search is a separate online service."
+    )
     if choice == "1":
         existing_key = bool(os.environ.get("OPENAI_API_KEY"))
         if existing_key:
@@ -7029,12 +7263,12 @@ def friendly_llm_configuration() -> dict[str, object] | None:
                 existing_key = bool(os.environ.get("OPENAI_API_KEY"))
         elif not existing_key:
             if not friendly_yes_no("Enter and save an OpenAI API key now?"):
-                print("LLM fallback remains off.")
-                return None
+                print("Previous LLM settings retained.")
+                return current
             existing_key = friendly_enter_openai_key()
         if not existing_key:
-            print("OPENAI_API_KEY is not available; LLM fallback remains off.")
-            return None
+            print("OPENAI_API_KEY is not available; previous LLM settings retained.")
+            return current
         model = input("Model [gpt-5.6-terra]: ").strip() or "gpt-5.6-terra"
         return {
             "llm_provider": "openai",
@@ -7043,37 +7277,28 @@ def friendly_llm_configuration() -> dict[str, object] | None:
             "llm_key_env": None,
         }
     if choice == "2":
-        executable = find_ollama_executable()
-        installed = installed_ollama_models(executable) if executable else []
-        memory_gib = system_memory_gib()
-        suitable = suitable_installed_ollama_models(installed, memory_gib)
-        default_model = suitable[0] if suitable else recommended_ollama_model(memory_gib)[0]
-        if suitable:
-            print("Suitable installed models: " + ", ".join(suitable))
-        model = input(f"Installed Ollama model [{default_model}]: ").strip() or default_model
-        base_url = input("Ollama base URL [http://localhost:11434]: ").strip()
-        return {
-            "llm_provider": "ollama",
-            "llm_model": model,
-            "llm_base_url": base_url or None,
-            "llm_key_env": None,
-            "ollama_web_search": friendly_ollama_web_search(),
-        }
+        return friendly_setup_ollama() or current
     if choice == "3":
         base_url = input("HTTPS API base URL (usually ending /v1): ").strip()
         model = input("Model name: ").strip()
         if not base_url or not model:
-            print("Both the base URL and model are required; LLM fallback remains off.")
-            return None
-        key_env = input("API-key environment variable [LLM_API_KEY, blank allowed]: ").strip()
+            print("Both the base URL and model are required; previous LLM settings retained.")
+            return current
+        base_url = validated_llm_base_url(base_url)
+        key_env = input("API-key variable [LLM_API_KEY; type - for no key]: ").strip() or "LLM_API_KEY"
+        if key_env == "-":
+            key_env = ""
+        elif not os.environ.get(key_env):
+            if not friendly_enter_api_key(key_env, "LLM provider"):
+                return current
         return {
             "llm_provider": "compatible",
             "llm_model": model,
             "llm_base_url": base_url,
-            "llm_key_env": key_env or None,
+            "llm_key_env": key_env,
         }
-    print("Unknown provider; LLM fallback remains off.")
-    return None
+    print("Unknown provider; previous LLM settings retained.")
+    return current
 
 
 def friendly_auto_approve_threshold(
@@ -7114,8 +7339,248 @@ def friendly_auto_approve_threshold(
         print("Please choose 1, 2, 3 or B.")
 
 
+def secure_delete_lookup_cache(path: Path) -> int:
+    """Clear only cached data, overwrite deleted SQLite cells and compact the file."""
+    if not path.is_file():
+        raise RuntimeError("No cache database exists at that path")
+    db = sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True, timeout=2)
+    try:
+        # Switch out of WAL before deleting so prior WAL frames are checkpointed
+        # and removed. Refuse to proceed if another connection prevents this.
+        mode = db.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+        if mode.casefold() != "delete":
+            raise RuntimeError("Close other AddressMend/database windows and retry")
+        db.execute("PRAGMA locking_mode=EXCLUSIVE")
+        db.execute("PRAGMA secure_delete=ON")
+        db.execute("BEGIN EXCLUSIVE")
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        deleted = 0
+        for table in ("online_cache", "postcode_cache"):
+            if table in tables:
+                deleted += db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                db.execute(f"DELETE FROM {table}")
+        db.commit()
+        db.execute("VACUUM")
+        return deleted
+    finally:
+        db.close()
+
+
+def friendly_secure_delete_cache(results_dir: Path) -> None:
+    path = results_dir / "corrections_and_online_cache.sqlite"
+    print("DELETE CACHED LOOKUP AND LLM DATA")
+    print(f"Database: {path}")
+    print("Clears saved online/postcode results and LLM responses. Future lookups may repeat and incur API charges.")
+    print("Approved corrections, review decisions, API keys and exported TSV files are kept.")
+    print("Uses SQLite secure deletion and compaction. SSD history, backups, synced copies and provider records are not erased.")
+    if not path.is_file():
+        print("No cache database exists yet.")
+        return
+    if not friendly_yes_no("Delete all cached lookup and LLM entries from this database?"):
+        print("Cancelled; no cache entries deleted.")
+        return
+    try:
+        deleted = secure_delete_lookup_cache(path)
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        print(f"Could not finish secure cache deletion: {exc}")
+        print("Deletion/compaction may be incomplete. Close other database users and retry.")
+        return
+    print(f"Deleted {deleted} cached entries and compacted the database.")
+
+
+def friendly_menu_items(
+    online: bool,
+    homedata: bool,
+    llm_settings: dict[str, object] | None,
+    auto_approve_threshold: float,
+) -> list[tuple[str, str]]:
+    """Return the shared action list for the curses and numbered menus."""
+    provider = llm_settings.get("llm_provider", "OFF") if llm_settings else "OFF"
+    return [
+        ("1", "Paste entries into this window"),
+        ("2", "Clean entries already copied to the clipboard"),
+        ("3", "Clean a saved Markdown, CSV or TSV file"),
+        ("4", "Download offline address data"),
+        ("5", "Add a downloaded offline address data file"),
+        ("6", "Teach the programme approved corrections"),
+        ("7", "Check what is installed and ready"),
+        ("8", "Explain the available address-data sources"),
+        (
+            "9",
+            f"Address and DNS lookups: {'ON' if online else 'OFF'} (LLM configured separately)",
+        ),
+        ("10", f"Configure LLM / Ollama: {provider}"),
+        (
+            "11",
+            f"Homedata address search: {'ON' if homedata and online else 'OFF' if not homedata else 'PAUSED — enable address lookups'}",
+        ),
+        ("12", "Enter or replace an API key"),
+        ("13", "Review and approve flagged corrections"),
+        (
+            "14",
+            "Change provisional automatic-entry threshold "
+            f"(currently {auto_approve_threshold:.2f})",
+        ),
+        ("15", "Delete cached lookup and LLM data"),
+        ("q", "Close the programme"),
+    ]
+
+
+def friendly_curses_available() -> bool:
+    """Use curses only on an interactive terminal where its module can initialise."""
+    if os.environ.get("ADDRESSMEND_NO_CURSES", "").casefold() in {"1", "true", "yes"}:
+        return False
+    if os.environ.get("TERM", "").casefold() == "dumb":
+        return False
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return False
+    try:
+        import curses  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _curses_write(
+    screen: object,
+    row: int,
+    column: int,
+    value: str,
+    width: int,
+    attribute: int = 0,
+) -> None:
+    """Draw a clipped menu line without failing during a terminal resize."""
+    import curses
+
+    height, actual_width = screen.getmaxyx()
+    width = min(width, actual_width)
+    if row < 0 or row >= height or column < 0 or width <= column + 1:
+        return
+    try:
+        screen.addnstr(row, column, value, max(0, width - column - 1), attribute)
+    except curses.error:
+        pass  # Terminal resized between measuring and drawing.
+
+
+def _friendly_curses_screen(
+    screen: object,
+    items: Sequence[tuple[str, str]],
+    selected: int,
+    results_dir: Path,
+    title: str = "Main menu",
+    back: str | None = None,
+) -> tuple[str, int]:
+    """Render and operate one keyboard-driven curses menu selection."""
+    import curses
+
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
+    screen.keypad(True)
+    selected = max(0, min(selected, len(items) - 1))
+    while True:
+        screen.erase()
+        height, width = screen.getmaxyx()
+        if height < 10 or width < 24:
+            _curses_write(screen, 0, 0, "Enlarge window; Q exits", width)
+            screen.refresh()
+            key = screen.getch()
+            if key in {27, ord("q"), ord("Q")}:
+                return back or "q", selected
+            if key == -1:
+                raise EOFError("Terminal input closed")
+            continue
+        visible_rows = max(1, height - 9)
+        first = max(0, min(selected - visible_rows // 2, len(items) - visible_rows))
+        last = min(len(items), first + visible_rows)
+
+        _curses_write(screen, 0, 0, f"ADDRESSMEND {VERSION}", width, curses.A_BOLD)
+        _curses_write(screen, 1, 0, f"Results: {results_dir}", width)
+        _curses_write(screen, 2, 0, title, width, curses.A_BOLD)
+        for row, item_index in enumerate(range(first, last), start=3):
+            _key, label = items[item_index]
+            marker = ">" if item_index == selected else " "
+            text = f" {marker} {label}"
+            attribute = curses.A_REVERSE if item_index == selected else curses.A_NORMAL
+            _curses_write(screen, row, 0, text, width, attribute)
+
+        if height >= 2:
+            for offset, line in enumerate(textwrap.wrap(items[selected][1], max(1, width - 1))[:3]):
+                _curses_write(screen, height - 5 + offset, 0, line, width)
+            position = f"{selected + 1}/{len(items)}"
+            _curses_write(
+                screen,
+                height - 2,
+                0,
+                "j/k move  l/Enter select  " + ("h/Q/Esc back" if back else "Q/Esc quit"),
+                width,
+                curses.A_DIM,
+            )
+            _curses_write(
+                screen,
+                height - 1,
+                max(0, width - len(position) - 1),
+                position,
+                width,
+                curses.A_DIM,
+            )
+        screen.refresh()
+        key = screen.getch()
+        if key in {curses.KEY_UP, ord("k")}:
+            selected = (selected - 1) % len(items)
+        elif key in {curses.KEY_DOWN, ord("j")}:
+            selected = (selected + 1) % len(items)
+        elif key in {curses.KEY_HOME, ord("g")}:
+            selected = 0
+        elif key in {curses.KEY_END, ord("G")}:
+            selected = len(items) - 1
+        elif key == curses.KEY_PPAGE:
+            selected = max(0, selected - visible_rows)
+        elif key == curses.KEY_NPAGE:
+            selected = min(len(items) - 1, selected + visible_rows)
+        elif key in {10, 13, curses.KEY_ENTER, curses.KEY_RIGHT, ord("l")}:
+            screen.erase()
+            screen.refresh()
+            return items[selected][0], selected
+        elif key in {27, ord("q"), ord("Q")}:
+            screen.erase()
+            screen.refresh()
+            return back or "q", len(items) - 1
+        elif key in {curses.KEY_LEFT, ord("h")} and back:
+            return back, selected
+        elif key == -1:
+            raise EOFError("Terminal input closed")
+
+
+def friendly_curses_choice(
+    items: Sequence[tuple[str, str]], selected: int, results_dir: Path,
+    title: str = "Main menu", back: str | None = None,
+) -> tuple[str, int]:
+    """Initialise curses for one choice, restoring the terminal before the action."""
+    import curses
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        return curses.wrapper(_friendly_curses_screen, items, selected, results_dir, title, back)
+    except curses.error as exc:
+        raise OSError(f"Curses terminal unavailable: {exc}") from exc
+
+
+def friendly_select(title: str, items: Sequence[tuple[str, str]]) -> str:
+    if friendly_curses_available():
+        try:
+            return friendly_curses_choice(items, 0, friendly_results_directory(), title, "b")[0]
+        except (ImportError, OSError):
+            print("Full-screen selection unavailable; using numbered choices.")
+    for key, label in items:
+        print(f" {key.upper():>2}  {label}")
+    return input("Choose an option: ").strip().casefold()
+
+
 def friendly_menu() -> int:
-    """Run the desktop menu with window-aware prompts and job-log output."""
+    """Run a curses desktop menu where supported, with a safe numbered fallback."""
     with friendly_output_wrapping():
         return _friendly_menu()
 
@@ -7127,143 +7592,140 @@ def _friendly_menu() -> int:
     homedata = True
     auto_approve_threshold = DEFAULT_AUTO_APPROVE_THRESHOLD
     llm_settings: dict[str, object] | None = None
+    use_curses = friendly_curses_available()
+    selected = 0
     while True:
-        print()
-        print(window_rule())
-        print(f"ADDRESSMEND {VERSION}")
-        print(window_rule())
-        print(COPYRIGHT)
-        print("Licensed under GNU GPL version 3 or later.")
-        print(
-            "There is no warranty; you may redistribute this free software under the GPL."
+        items = friendly_menu_items(
+            online,
+            homedata,
+            llm_settings,
+            auto_approve_threshold,
         )
-        print(
-            "This programme cleans six-column contact tables and explains its decisions."
-        )
-        print("Your results are saved in:")
-        print(f"  {results_dir}")
-        print()
-        print("  1  Paste entries into this window")
-        print("  2  Clean entries already copied to the clipboard")
-        print("  3  Clean a saved Markdown, CSV or TSV file")
-        print("  4  Download offline address data")
-        print("  5  Add a downloaded offline address data file")
-        print("  6  Teach the programme approved corrections")
-        print("  7  Check what is installed and ready")
-        print("  8  Explain the available address-data sources")
-        print(
-            "  9  Change internet lookups "
-            f"(currently {'ON — standard procedure' if online else 'OFF — local only'})"
-        )
-        print(
-            " 10  Configure LLM fallback "
-            f"(currently {llm_settings['llm_provider'] if llm_settings else 'OFF'})"
-        )
-        print(
-            " 11  Change wider free address search "
-            f"(currently {'ON' if homedata else 'OFF'})"
-        )
-        print(" 12  Install/configure local Ollama and optional web evidence")
-        print(" 13  Enter or replace an API key")
-        print(" 14  Review and approve flagged corrections")
-        print(
-            " 15  Change provisional automatic-entry threshold "
-            f"(currently {auto_approve_threshold:.2f})"
-        )
-        print("  Q  Close the programme")
-        choice = input("\nChoose an option: ").strip().casefold()
-        if choice == "1":
-            friendly_paste(
-                results_dir,
-                online,
-                llm_settings,
-                homedata,
-                auto_approve_threshold,
-            )
-        elif choice == "2":
-            print("The programme will read the text currently copied to the clipboard.")
-            friendly_clean(
-                "@clipboard",
-                results_dir,
-                online=online,
-                llm_settings=llm_settings,
-                homedata=homedata,
-                auto_approve_threshold=auto_approve_threshold,
-            )
-        elif choice == "3":
+        if use_curses:
+            try:
+                choice, selected = friendly_curses_choice(items, selected, results_dir)
+            except (ImportError, OSError):
+                # A terminal can claim curses support and still reject setup or a
+                # resize. Continue with the always-available interface.
+                use_curses = False
+                print("The full-screen menu is unavailable; using the numbered menu.")
+                continue
+        else:
+            print()
+            print(window_rule())
+            print(f"ADDRESSMEND {VERSION}")
+            print(window_rule())
+            print(COPYRIGHT)
+            print("Licensed under GNU GPL version 3 or later.")
             print(
-                "Drag the file into this window, or type its full path, then press Enter."
+                "There is no warranty; you may redistribute this free software under "
+                "the GPL."
             )
-            source = friendly_path("File: ")
-            if source:
+            print(
+                "This programme cleans six-column contact tables and explains its "
+                "decisions."
+            )
+            print("Your results are saved in:")
+            print(f"  {results_dir}")
+            print()
+            for item_key, label in items:
+                print(f" {item_key.upper():>2}  {label}")
+            choice = input("\nChoose an option: ").strip().casefold()
+        try:
+            if choice == "1":
+                friendly_paste(
+                    results_dir,
+                    online,
+                    llm_settings,
+                    homedata,
+                    auto_approve_threshold,
+                )
+            elif choice == "2":
+                print("The programme will read the text currently copied to the clipboard.")
                 friendly_clean(
-                    str(source),
+                    "@clipboard",
                     results_dir,
                     online=online,
                     llm_settings=llm_settings,
                     homedata=homedata,
                     auto_approve_threshold=auto_approve_threshold,
                 )
-        elif choice == "4":
-            friendly_download(results_dir)
-        elif choice == "5":
-            friendly_build_index(results_dir)
-        elif choice == "6":
-            friendly_learn(results_dir)
-        elif choice == "7":
-            database = friendly_database(results_dir)
-            doctor(
-                argparse.Namespace(
-                    db=str(database) if database else None,
-                    memory=str(results_dir / "corrections_and_online_cache.sqlite"),
-                )
-            )
-        elif choice == "8":
-            print()
-            print(RESOURCE_NOTES)
-        elif choice == "9":
-            online = not online
-            if online:
+            elif choice == "3":
                 print(
-                    "Internet lookups are now ON and the standard procedure will be used."
+                    "Drag the file into this window, or type its full path, then press Enter."
                 )
+                source = friendly_path("File: ")
+                if source:
+                    friendly_clean(
+                        str(source),
+                        results_dir,
+                        online=online,
+                        llm_settings=llm_settings,
+                        homedata=homedata,
+                        auto_approve_threshold=auto_approve_threshold,
+                    )
+            elif choice == "4":
+                friendly_download(results_dir)
+            elif choice == "5":
+                friendly_build_index(results_dir)
+            elif choice == "6":
+                friendly_learn(results_dir)
+            elif choice == "7":
+                database = friendly_database(results_dir)
+                doctor(
+                    argparse.Namespace(
+                        db=str(database) if database else None,
+                        memory=str(results_dir / "corrections_and_online_cache.sqlite"),
+                    )
+                )
+            elif choice == "8":
+                print()
+                print(RESOURCE_NOTES)
+            elif choice == "9":
+                online = not online
+                if online:
+                    print(
+                        "Internet lookups are now ON and the standard procedure will be used."
+                    )
+                else:
+                    print(
+                        "Address/DNS lookups are now OFF. LLM and Ollama web-search settings are separate."
+                    )
+            elif choice == "10":
+                llm_settings = friendly_llm_configuration(llm_settings)
+            elif choice == "11":
+                if homedata:
+                    homedata = False
+                    print("Wider address search is now OFF.")
+                else:
+                    print(
+                        "This sends only each unresolved address fragment and postcode to "
+                        "Homedata's free address-search API. It never sends names or emails."
+                    )
+                    print(
+                        "Results are cached locally; Homedata is a third-party service whose "
+                        "availability and terms can change."
+                    )
+                    homedata = friendly_yes_no("Enable wider free address search?")
+            elif choice == "12":
+                friendly_api_key_menu()
+            elif choice == "13":
+                friendly_review_flagged(results_dir)
+            elif choice == "14":
+                auto_approve_threshold = friendly_auto_approve_threshold(
+                    auto_approve_threshold
+                )
+            elif choice == "15":
+                friendly_secure_delete_cache(results_dir)
+            elif choice in {"q", "quit", "exit"}:
+                print("You may now close this window.")
+                return 0
             else:
-                print(
-                    "Internet lookups are now OFF; processing will remain on this computer."
-                )
-        elif choice == "10":
-            llm_settings = friendly_llm_configuration()
-        elif choice == "11":
-            if homedata:
-                homedata = False
-                print("Wider address search is now OFF.")
-            else:
-                print(
-                    "This sends only each unresolved address fragment and postcode to "
-                    "Homedata's free address-search API. It never sends names or emails."
-                )
-                print(
-                    "Results are cached locally; Homedata is a third-party service whose "
-                    "availability and terms can change."
-                )
-                homedata = friendly_yes_no("Enable wider free address search?")
-        elif choice == "12":
-            configured = friendly_setup_ollama()
-            if configured:
-                llm_settings = configured
-        elif choice == "13":
-            friendly_api_key_menu()
-        elif choice == "14":
-            friendly_review_flagged(results_dir)
-        elif choice == "15":
-            auto_approve_threshold = friendly_auto_approve_threshold(
-                auto_approve_threshold
-            )
-        elif choice in {"q", "quit", "exit"}:
-            print("You may now close this window.")
-            return 0
-        else:
-            print("Please choose 1 to 15, or Q to close the programme.")
+                print("Please choose 1 to 15, or Q to close the programme.")
+        except KeyboardInterrupt:
+            print("\nAction cancelled; returning to the menu.")
+        except (OSError, RuntimeError, ValueError, sqlite3.Error, SystemExit) as exc:
+            print(f"Action could not finish: {exc}")
         friendly_return_to_menu()
 
 
@@ -7371,14 +7833,14 @@ def parser() -> argparse.ArgumentParser:
     clean.add_argument(
         "--llm-batch-size",
         type=int,
-        default=10,
-        help="unresolved rows per LLM request, 1-50 (default 10)",
+        default=None,
+        help="unresolved rows per request, 1-50 (default: Ollama 1; other providers 10)",
     )
     clean.add_argument(
         "--llm-timeout",
         type=float,
-        default=120.0,
-        help="timeout for each LLM request in seconds (default 120)",
+        default=None,
+        help="request timeout, 1-600 seconds (default: Ollama 300; other providers 120)",
     )
     clean.add_argument(
         "--address-threshold",
