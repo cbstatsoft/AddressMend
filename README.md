@@ -316,9 +316,13 @@ option **13** offers the latest batch or a different `review_report_…tsv`.
 AddressMend finds its matching cleaned TSV and shows each valid proposed
 correction with the current value, suggestion, evidence and record context.
 Fields with no usable suggestion still require checking against the source.
+The review offer counts only suggestions that can actually be shown. Already
+applied suggestions and suggestions blocked by validation are explained instead
+of silently opening an empty review.
 
-In the full-screen review panel, use **A** to approve, **R** to keep the current
-value, **S** or Enter to skip, and **Q** or Escape to finish and save. Scroll long
+In the full-screen review panel, use **A** (or **Y**) to approve, **R** to keep the current
+value, **S** to skip, and **Q** or Escape to finish and save. Enter does nothing,
+so a leftover Enter from the preceding prompt cannot skip a correction. Scroll long
 details with arrows, j/k or Page Up/Page Down. In the text fallback, choose:
 
 - **A** to approve and insert the suggestion;

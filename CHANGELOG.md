@@ -3,6 +3,13 @@
 All notable changes to AddressMend are recorded here. The project uses
 semantic versioning.
 
+## Unreleased
+
+- Count actionable suggestions consistently before offering and opening review;
+  explain already-applied or invalid suggestions instead of silently skipping all.
+- Make review wait for a deliberate decision: Enter no longer skips a correction,
+  and Y approves in full-screen review as it does in text review.
+
 ## 1.7.0 — 7 September 2026
 
 - Add an immediate post-batch review offer and a latest-batch shortcut, with a
