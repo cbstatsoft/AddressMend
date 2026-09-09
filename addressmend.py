@@ -1031,6 +1031,31 @@ def flagged_review_candidates(audit: Sequence[Audit]) -> list[Audit]:
     ]
 
 
+def prepared_review_candidates(
+    records: Sequence[Record], audit: Sequence[Audit]
+) -> tuple[list[tuple[Audit, str]], list[str]]:
+    """Apply the same review eligibility checks before offering and opening review."""
+    ready: list[tuple[Audit, str]] = []
+    excluded: list[str] = []
+    for candidate in flagged_review_candidates(audit):
+        label = f"Row {candidate.row}, {candidate.field}"
+        if not 1 <= candidate.row <= len(records):
+            excluded.append(f"{label}: row is missing from the cleaned table.")
+            continue
+        current = getattr(records[candidate.row - 1], candidate.field)
+        suggestion = locally_valid_llm_value(candidate.field, current, candidate.cleaned)
+        if suggestion is None:
+            excluded.append(
+                f"{label}: suggestion failed format or house/unit-number checks; "
+                "check the source and edit the spreadsheet manually."
+            )
+        elif suggestion == current:
+            excluded.append(f"{label}: suggestion is already in the cleaned table.")
+        else:
+            ready.append((candidate, suggestion))
+    return ready, excluded
+
+
 def write_review_decisions(decisions: Sequence[ReviewDecision], path: str) -> None:
     with open(
         path, "w", encoding="utf-8-sig" if os.name == "nt" else "utf-8", newline=""
@@ -1053,21 +1078,18 @@ def review_flagged_corrections(
     ask = prompt or input
     decisions: list[ReviewDecision] = []
     resolved_fields: set[tuple[int, str]] = set()
-    candidates = flagged_review_candidates(audit)
+    candidates, excluded = prepared_review_candidates(records, audit)
+    for explanation in excluded:
+        print(explanation)
+    if not candidates:
+        print("No actionable suggestions remain to approve. Unresolved checks need source verification.")
     stopped = False
-    for position, candidate in enumerate(candidates, 1):
-        if not 1 <= candidate.row <= len(records):
-            continue
+    for position, (candidate, suggestion) in enumerate(candidates, 1):
         key = (candidate.row, candidate.field)
         if key in resolved_fields:
             continue
         record = records[candidate.row - 1]
         current = getattr(record, candidate.field)
-        suggestion = locally_valid_llm_value(
-            candidate.field, current, candidate.cleaned
-        )
-        if suggestion is None or suggestion == current:
-            continue
         print()
         print(f"FLAGGED CORRECTION {position}/{len(candidates)} — row {candidate.row}")
         print(f"Person: {record.title} {record.first_name} {record.last_name}".strip())
@@ -4804,7 +4826,7 @@ def download_command(args: argparse.Namespace) -> int:
 
 
 def self_test() -> int:
-    from unittest.mock import patch
+    from unittest.mock import MagicMock, patch
 
     # Preserve mailbox identifiers and valid uncommon domains during OCR repair.
     assert clean_email("person@gmai|.com") == ("person@gmail.com", None)
@@ -5441,6 +5463,33 @@ def self_test() -> int:
         == 1
     )
     approval_memory.close()
+    # Historical review events must not offer an empty interactive session.
+    ready, excluded = prepared_review_candidates(approval_records, approval_audit)
+    assert not ready and "already in" in excluded[0]
+    review_records = [Record(address="10 Careton Road")]
+    mixed_review = approval_audit + [
+        Audit(1, "address", "10 Careton Road", "12 Carlton Road", "review", "conflicting number"),
+        Audit(2, "address", "10 Careton Road", "10 Carlton Road", "review", "missing row"),
+    ]
+    ready, excluded = prepared_review_candidates(review_records, mixed_review)
+    assert len(ready) == 1 and len(excluded) == 2
+    with patch(__name__ + ".friendly_review_choice", return_value="y") as chooser:
+        decisions = review_flagged_corrections(review_records, mixed_review, None)
+    assert chooser.call_count == 1 and chooser.call_args.args[-2:] == (1, 1)
+    assert decisions[0].decision == "approved"
+    with patch(__name__ + ".friendly_review_choice") as chooser:
+        assert review_flagged_corrections(review_records, mixed_review, None) == []
+    chooser.assert_not_called()
+    # Portable simulated terminal: Enter must not dismiss the review panel.
+    fake_curses = MagicMock()
+    fake_curses.error = RuntimeError
+    screen = MagicMock()
+    screen.getmaxyx.return_value = (24, 80)
+    screen.getch.side_effect = [13, 10, ord("Y")]
+    with patch.dict(sys.modules, {"curses": fake_curses}):
+        assert _review_curses_screen(screen, review_records[0], approval_audit[0], "10 Carlton Road", 1, 1) == "a"
+    assert screen.getch.call_count == 3
+    screen.timeout.assert_called_once_with(-1)
     with patch.dict(os.environ, {"OLLAMA_API_KEY": "test-key"}):
         configured_ollama = llm_config(
             parser().parse_args(
@@ -6486,7 +6535,14 @@ def friendly_clean(
             print(
                 f"It also marks {provisional} provisional correction(s) for you to confirm."
             )
-            if friendly_yes_no("Review and approve proposed corrections now?"):
+            ready, excluded = prepared_review_candidates(
+                read_records(str(output)), read_audit(str(audit))
+            )
+            for explanation in excluded:
+                print(explanation)
+            if not ready:
+                print("No actionable suggestions remain to approve. Unresolved checks need source verification.")
+            elif friendly_yes_no(f"Review and approve {len(ready)} proposed correction(s) now?"):
                 friendly_review_flagged(results_dir, audit, output)
     except (Exception, SystemExit) as exc:
         print()
@@ -6643,6 +6699,7 @@ def _review_curses_screen(screen, record, candidate, suggestion, position, total
     import curses
 
     screen.keypad(True)
+    screen.timeout(-1)
     try:
         curses.curs_set(0)
     except curses.error:
@@ -6682,15 +6739,15 @@ def _review_curses_screen(screen, record, candidate, suggestion, position, total
         for row, line in enumerate(lines[offset:offset + visible], start=len(header)):
             _curses_write(screen, row, 0, line, width)
         _curses_write(screen, height - 3, 0, "A approve R keep S skip Q save", width, curses.A_BOLD)
-        _curses_write(screen, height - 2, 0, "j/k scroll; Enter skips", width)
+        _curses_write(screen, height - 2, 0, "j/k scroll; S skips", width)
         _curses_write(screen, height - 1, 0, f"Detail lines {offset + 1}-{min(offset + visible, len(lines))}/{len(lines)}", width)
         screen.refresh()
         key = screen.getch()
-        if key in {ord("a"), ord("A")}:
+        if key in {ord("a"), ord("A"), ord("y"), ord("Y")}:
             return "a"
         if key in {ord("r"), ord("R")}:
             return "k"
-        if key in {ord("s"), ord("S"), 10, 13, curses.KEY_ENTER}:
+        if key in {ord("s"), ord("S")}:
             return "s"
         if key in {ord("q"), ord("Q"), 27, -1}:
             return "q"
@@ -6762,9 +6819,12 @@ def friendly_review_flagged(
     try:
         records = read_records(str(cleaned))
         audit = read_audit(str(report))
-        candidate_count = len(flagged_review_candidates(audit))
+        ready, excluded = prepared_review_candidates(records, audit)
+        candidate_count = len(ready)
         if not candidate_count:
-            print("That report contains no provisional corrections requiring approval.")
+            for explanation in excluded:
+                print(explanation)
+            print("No actionable suggestions remain to approve. Unresolved checks need source verification.")
             return
         print(f"Found {candidate_count} flagged correction(s).")
         memory = connect_memory(str(memory_path))
