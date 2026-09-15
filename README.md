@@ -612,6 +612,38 @@ runs from that folder and saves its working files under
 choose **Q** when you intend to close it. The launcher pauses only after an error,
 so a normal **Q** exit now closes cleanly without a second “Press any key” prompt.
 
+### Updating (especially Windows)
+
+Close AddressMend, then double-click **`update.cmd`** in its application folder.
+It finds Python 3.10 or newer, checks the official GitHub `master` branch and
+asks before installing. The window stays open so you can read the result.
+Internet access to GitHub is required; GitHub rate limits or network restrictions
+can stop the check. You do not need an API key or administrator rights for a
+writable portable folder.
+
+- **Downloaded ZIP:** Git is not needed. The updater downloads one specific
+  GitHub revision, validates its Python syntax and replaces only a fixed list of
+  application files. Existing versions go into `update-backups/<timestamp>`.
+  Local edits to application files are replaced after confirmation. If replacing
+  a file fails, it attempts to restore the original files and reports any failed
+  restoration. Saved addresses, SQLite caches, API keys and results are untouched.
+- **Git clone:** Git must be installed. The updater requires a clean `master`
+  branch and a fast-forward update. Local modifications, merge conflicts,
+  unfinished Git operations and divergent history stop the update. A backup
+  branch preserves the previous commit; it never resets or stashes your changes.
+
+You can also run `python update.py` on Windows, macOS or Linux, or
+`python update.py --check` to check without replacing application files. Use
+`python3` where that is your Python command. The updater changes only the folder
+containing `update.py`; for an application copied elsewhere by `INSTALL`, update
+this source folder and rerun `INSTALL` to refresh that installed copy. It does
+not update Python, Ollama or downloaded models.
+
+If you need to restore a ZIP installation, close AddressMend and copy the
+application files from the relevant backup folder back into the application
+folder. Keep your data folders in place. If your older download has no updater,
+download the latest repository ZIP first.
+
 ### macOS
 
 In Terminal, enter the downloaded AddressMend folder and run:
