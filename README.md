@@ -23,8 +23,10 @@ terminals, including downloads, imports, API keys, Ollama models, review and
 automatic-entry thresholds. Arrow keys or **j/k** move; **l** or Enter selects;
 **h** or Left returns from a submenu. At the main menu, h does nothing. Home/End (or g/G)
 jump to the first/last item, Page Up/Page Down scroll, and Q/Escape exits or goes
-back. Submenus also accept their displayed single-character shortcuts. Yes/no
-confirmations start on **No**; **Y** or **N** selects explicitly.
+back. Curses submenus use highlighted choices, without numbered labels or
+number-entry shortcuts. Yes/no confirmations start on **No**; **Y** or **N**
+also selects explicitly. Number entry is used only in the text fallback when
+curses is unavailable or disabled.
 
 Paths, URLs, models, column names and masked API keys have full-screen entry
 forms. Type normally (hjkl remain letters), use arrows, Home/End, Backspace or
