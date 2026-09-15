@@ -325,6 +325,23 @@ preferable to repeatedly fuzzy-matching text; GeoPlace describes the UPRN as the
 unique identifier for every UK addressable location:
 [GeoPlace UPRN guidance](https://www.geoplace.co.uk/addresses-streets/location-data/the-uprn).
 
+### Address present, postcode missing
+
+Leave the postcode column blank and provide as much of the address as possible,
+ideally `house/flat and street, town/city`. AddressMend first moves a single
+postcode explicitly written at the end of the address into the postcode column.
+Otherwise it searches the offline index and enabled online sources without an
+LLM. Homedata results retain their locality for this search.
+
+Automatic insertion requires a numbered street address with a comma-separated
+locality, a matching address and only one plausible postcode among the returned
+candidates. At the default 0.99 tier, both the offline index and Homedata must
+support that match; 0.95 permits one of those sources. At 1.00, lookup suggestions
+remain for manual approval. These are evidence rules, not measured probabilities.
+Nominatim results, fuzzy matches, missing locality and conflicting postcodes stay
+in review. Use the in-app review to approve a supported postcode. The supplied
+address is preserved during inference; a street alone can span several postcodes.
+
 ### Approving flagged corrections in the programme
 
 After a batch containing provisional suggestions, choose **Review and approve

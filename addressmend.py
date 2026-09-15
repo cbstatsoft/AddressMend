@@ -1970,12 +1970,13 @@ def homedata_candidates(
     postcode: str,
     memory: sqlite3.Connection | None,
     delay: float = 0.35,
+    preserve_locality: bool = False,
 ) -> list[tuple[str, str]]:
     """Search Homedata's documented unauthenticated address-find endpoint."""
     global _LAST_HOMEDATA_REQUEST, _HOMEDATA_ERROR_REPORTED
     query = squash(f"{fragment} {postcode}")
-    cache_key = ascii_key(query)
-    if len(cache_key) < 4:
+    cache_key = ("full-address:" if preserve_locality else "") + ascii_key(query)
+    if len(ascii_key(query)) < 4:
         return []
     if memory:
         cached = memory.execute(
@@ -2021,7 +2022,8 @@ def homedata_candidates(
             parts = [part for part in parts if part]
             if parts and normalise_postcode(parts[-1]) == postcode_value:
                 parts.pop()
-            address = smart_case(compact_urban_locality(", ".join(parts)))
+            joined = ", ".join(parts)
+            address = smart_case(joined if preserve_locality else compact_urban_locality(joined))
             if address:
                 answer.append((address, postcode_value))
         answer = list(dict.fromkeys(answer))
@@ -2760,6 +2762,73 @@ def explain_active_sources(
             )
 
 
+def resolve_missing_postcode(record, row_number, audit, args, memory, index):
+    """Resolve address-only input without applying postcode-constrained rules."""
+    embedded_pattern = r"\b" + UK_POSTCODE_RE.pattern[1:-1].replace(" ", r"\s*") + r"\b"
+    embedded = list(re.finditer(embedded_pattern, record.address, re.I))
+    if len(embedded) == 1 and not record.address[embedded[0].end():].strip(" ,.;"):
+        match = embedded[0]
+        address = record.address[:match.start()].rstrip(" ,;")
+        if address:
+            postcode = normalise_postcode(match.group())
+            add_change(audit, row_number, "address", record.address, address, "formatting", "moved trailing postcode into its own column")
+            add_change(audit, row_number, "postcode", "", postcode, "formatting", "postcode explicitly supplied in address column; not inferred")
+            record.address, record.postcode = address, postcode
+            return record
+
+    sources = [("Offline index", index.global_search(record.address))]
+    if getattr(args, "homedata", False):
+        sources.append(("Homedata", homedata_candidates(
+            record.address, "", memory, getattr(args, "homedata_delay", 0.35), preserve_locality=True
+        )))
+    # Keep every plausible postcode so an equally plausible alternative blocks
+    # promotion, rather than letting the best search result win by row order.
+    proposals: dict[str, list[str]] = {}
+    exact_sources: dict[str, set[str]] = {}
+    supplied = ascii_key(record.address)
+    parts = [squash(part) for part in record.address.split(",") if squash(part)]
+    located = (
+        len(parts) >= 2 and any(STREET_SUFFIX_RE.search(part) for part in parts[:-1])
+        and bool(re.search(r"[A-Za-z]{3}", parts[-1]))
+        and not STREET_SUFFIX_RE.search(parts[-1])
+        and bool(premise_keys(record.address))
+        and not embedded
+    )
+    for source, candidates in sources:
+        for address, postcode in candidates:
+            postcode = normalise_postcode(postcode)
+            if not valid_postcode(postcode):
+                continue
+            if premise_keys(record.address) and not premise_keys(record.address) <= premise_keys(address):
+                continue
+            exact = ascii_key(address) == supplied or ascii_key(address).startswith(supplied + " ")
+            if not exact and score_address(record.address, address) < 0.80:
+                continue
+            proposals.setdefault(postcode, []).append(f"{source}: {address}")
+            if exact and located:
+                exact_sources.setdefault(postcode, set()).add(source)
+
+    if getattr(args, "nominatim", False):
+        found = nominatim_address_lookup(record.address, memory, getattr(args, "nominatim_delay", 1.05))
+        if found and valid_postcode(found[1]):
+            address, postcode = found
+            if not premise_keys(record.address) or premise_keys(record.address) <= premise_keys(address):
+                proposals.setdefault(normalise_postcode(postcode), []).append(f"OpenStreetMap/Nominatim: {address} (broad search; review evidence only)")
+
+    threshold = getattr(args, "auto_approve_threshold", DEFAULT_AUTO_APPROVE_THRESHOLD)
+    for postcode, evidence in proposals.items():
+        supporters = exact_sources.get(postcode, set())
+        automatic = len(proposals) == 1 and threshold < 1.0 and len(supporters) >= (2 if threshold >= 0.99 else 1)
+        reason = "Missing-postcode address search; " + "; ".join(dict.fromkeys(evidence))
+        add_change(audit, row_number, "postcode", "", postcode, str(threshold) if automatic else "review", reason)
+        if automatic:
+            record.postcode = postcode
+    if not record.postcode:
+        audit.append(Audit(row_number, "postcode", "", "", "unresolved",
+                           "missing postcode: approve a supported suggestion, or supply house/flat, street and town/city; a street alone may span several postcodes"))
+    return record
+
+
 def apply_address_lookups(
     raw: Record,
     record: Record,
@@ -2794,6 +2863,9 @@ def apply_address_lookups(
         )
         record.address, record.postcode = address, postcode
         return record
+
+    if not squash(record.postcode) and record.address:
+        return resolve_missing_postcode(record, row_number, audit, args, memory, index)
 
     offline_pc, corrected = offline_postcode_correction(record.postcode, index)
     if corrected:
@@ -4827,6 +4899,26 @@ def download_command(args: argparse.Namespace) -> int:
 
 def self_test() -> int:
     from unittest.mock import MagicMock, patch
+
+    # Missing postcodes use locality-aware evidence, not a postcode-scoped guess.
+    missing_args = argparse.Namespace(homedata=True, nominatim=False, auto_approve_threshold=0.99)
+    missing_index = MagicMock()
+    full_address = "10 Example Road, Exampleton"
+    matches = [(full_address, "SW1A 1AA")]
+    for threshold, offline, expected in (
+        (0.99, matches, "SW1A 1AA"), (0.99, [], ""),
+        (0.95, [], "SW1A 1AA"), (1.0, matches, ""),
+        (0.95, matches + [(full_address, "SW1A 2AA")], ""),
+    ):
+        missing_args.auto_approve_threshold = threshold
+        missing_index.global_search.return_value = offline
+        missing_record = Record(address=full_address)
+        with patch(__name__ + ".homedata_candidates", return_value=matches):
+            resolve_missing_postcode(missing_record, 1, [], missing_args, None, missing_index)
+        assert missing_record.postcode == expected and missing_record.address == full_address
+    embedded_record = Record(address=full_address + " SW1A1AA")
+    resolve_missing_postcode(embedded_record, 1, [], missing_args, None, missing_index)
+    assert embedded_record.postcode == "SW1A 1AA" and embedded_record.address == full_address
 
     # Preserve mailbox identifiers and valid uncommon domains during OCR repair.
     assert clean_email("person@gmai|.com") == ("person@gmail.com", None)
