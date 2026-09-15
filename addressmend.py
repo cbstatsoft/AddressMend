@@ -7693,10 +7693,11 @@ def friendly_auto_approve_threshold(
         "Structural safeguards always remain: conflicting candidates, invalid "
         "postcodes and changed house/flat identifiers cannot be promoted."
     )
-    print("  1  0.99 — two lookup families must agree (recommended/default)")
-    print("  2  0.95 — one structurally safe lookup candidate may be inserted")
-    print("  3  1.00 — keep all provisional lookup candidates for approval")
-    print("  B  Keep the current setting")
+    if prompt is not None:
+        print("  1  0.99 — two lookup families must agree (recommended/default)")
+        print("  2  0.95 — one structurally safe lookup candidate may be inserted")
+        print("  3  1.00 — keep all provisional lookup candidates for approval")
+        print("  B  Keep the current setting")
     while True:
         choice = (ask("Total automatic-entry threshold: ") if prompt is not None else friendly_select(
             f"Automatic entry (current {current:.2f}; evidence tiers, not measured accuracy)", [
@@ -7925,7 +7926,7 @@ def _friendly_curses_screen(
         for row, item_index in enumerate(range(first, last), start=menu_start):
             _key, label = items[item_index]
             marker = ">" if item_index == selected else " "
-            text = f" {marker} {('[' + _key.upper() + '] ') if back else ''}{label}"
+            text = f" {marker} {label}"
             attribute = curses.A_REVERSE if item_index == selected else curses.A_NORMAL
             _curses_write(screen, row, 0, text, width, attribute)
 
@@ -7973,10 +7974,10 @@ def _friendly_curses_screen(
             return back or "q", len(items) - 1
         elif key in {curses.KEY_LEFT, ord("h")} and back:
             return back, selected
-        elif back and 0 <= key <= 0x10ffff:
+        elif back and {item_key for item_key, _label in items} == {"y", "n"} and key in {ord("y"), ord("Y"), ord("n"), ord("N")}:
             typed = chr(key).casefold()
             for index, (item_key, _label) in enumerate(items):
-                if len(item_key) == 1 and typed == item_key:
+                if typed == item_key:
                     return item_key, index
         elif key == -1:
             raise EOFError("Terminal input closed")
