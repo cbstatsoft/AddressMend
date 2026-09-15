@@ -5,6 +5,9 @@ semantic versioning.
 
 ## Unreleased
 
+- Use highlighted choices throughout curses submenus, without numeric shortcut
+  labels or numeric selection. Remove the threshold's preceding numbered list;
+  keep number entry only in the text fallback.
 - Add a double-click Windows updater and portable Python update script. ZIP
   installations back up application files and roll back failed replacements;
   Git checkouts require a clean master branch and fast-forward history.
