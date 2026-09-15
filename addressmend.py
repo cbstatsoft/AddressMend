@@ -5490,6 +5490,31 @@ def self_test() -> int:
         assert _review_curses_screen(screen, review_records[0], approval_audit[0], "10 Carlton Road", 1, 1) == "a"
     assert screen.getch.call_count == 3
     screen.timeout.assert_called_once_with(-1)
+    # Dialog input must preserve paste delimiters, hide keys and honour cancel.
+    screen = MagicMock()
+    screen.getmaxyx.return_value = (24, 80)
+    screen.get_wch.side_effect = [*"test-secret", "\n"]
+    with patch.dict(sys.modules, {"curses": fake_curses}):
+        assert _friendly_dialog_screen(screen, "API key", "", "", True) == "test-secret"
+    drawn = " ".join(str(call.args[2]) for call in screen.addnstr.call_args_list)
+    assert "test-secret" not in drawn and "***********" in drawn
+    screen.reset_mock()
+    screen.get_wch.side_effect = [*"A\tB\nC\tD", "\x04"]
+    with patch.dict(sys.modules, {"curses": fake_curses}):
+        assert _friendly_dialog_screen(screen, "Paste", "", "", False, True) == "A\tB\nC\tD"
+    screen.get_wch.side_effect = ["x", "\x1b"]
+    with patch.dict(sys.modules, {"curses": fake_curses}):
+        try:
+            _friendly_dialog_screen(screen, "Setting", "", "original")
+        except KeyboardInterrupt:
+            pass
+        else:
+            raise AssertionError("Escape submitted a cancelled setting")
+    with patch(__name__ + ".friendly_curses_available", return_value=False), patch("builtins.input", return_value=""):
+        assert friendly_input("Model", "default-model") == "default-model"
+    with patch(__name__ + ".friendly_curses_available", return_value=True), patch(__name__ + ".friendly_select", return_value="b") as choose:
+        assert not friendly_yes_no("Delete cached data?")
+        assert choose.call_args.args[1][0][0] == "n"
     with patch.dict(os.environ, {"OLLAMA_API_KEY": "test-key"}):
         configured_ollama = llm_config(
             parser().parse_args(
@@ -5964,12 +5989,20 @@ class WindowAwareTextWriter:
     def __init__(self, target: TextIO):
         self.target = target
         self.pending = ""
+        self.dialog_lines: list[str] = []
+
+    def remember(self, value: str) -> None:
+        # Keep a bounded, in-memory view of recent action output for dialogs.
+        value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+        self.dialog_lines.append(value[-2000:])
+        del self.dialog_lines[:-200]
 
     def write(self, value: str) -> int:
         consumed = len(value)
         self.pending += value
         while "\n" in self.pending:
             line, self.pending = self.pending.split("\n", 1)
+            self.remember(line)
             self.target.write(window_wrap_line(line) + "\n")
         # Preserve carriage-return progress indicators produced by downloads or
         # model runners rather than turning every refresh into another line.
@@ -5980,6 +6013,7 @@ class WindowAwareTextWriter:
 
     def flush(self) -> None:
         if self.pending:
+            self.remember(self.pending)
             self.target.write(window_wrap_line(self.pending))
             self.pending = ""
         self.target.flush()
@@ -6223,8 +6257,173 @@ def friendly_output_wrapping() -> Iterator[None]:
         sys.stdout, sys.stderr = original_stdout, original_stderr
 
 
+def friendly_dialog_context() -> str:
+    """Consume recent output so setup explanations remain visible inside curses."""
+    parts = []
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, WindowAwareTextWriter):
+            stream.flush()
+            parts.extend(stream.dialog_lines)
+            stream.dialog_lines.clear()
+    return "\n".join(parts).strip()
+
+
+def _friendly_dialog_screen(screen, title, description, value=None, secret=False, multiline=False):
+    """Scrollable information or editable text; Escape cancels without submission."""
+    import curses
+
+    screen.keypad(True)
+    screen.timeout(-1)
+    editing = value is not None
+    value = value or ""
+    cursor = len(value)
+    offset = 0
+    while True:
+        screen.erase()
+        height, width = screen.getmaxyx()
+        if height < 12 or width < 30:
+            _curses_write(screen, 0, 0, "Enlarge window; Esc cancels", width)
+            screen.refresh()
+            key = screen.get_wch()
+            if key in ("\x1b", "\x03"):
+                raise KeyboardInterrupt
+            if key == "\x04":
+                raise EOFError
+            continue
+        header = textwrap.wrap(title, width - 2)[:2]
+        header += textwrap.wrap(COPYRIGHT + " | GNU GPL v3 or later", width - 2)
+        for row, line in enumerate(header):
+            _curses_write(screen, row, 0, line, width, curses.A_BOLD)
+        edit_height = min(6 if multiline else 1, max(1, height // 3)) if editing else 0
+        body_end = height - edit_height - 3
+        visible = max(1, body_end - len(header))
+        lines = []
+        for line in description.splitlines():
+            lines.extend(textwrap.wrap(line, width - 2) or [""])
+        offset = max(0, min(offset, max(0, len(lines) - visible)))
+        for row, line in enumerate(lines[offset:offset + visible], len(header)):
+            _curses_write(screen, row, 0, line, width)
+        cursor_row, cursor_col = 0, 0
+        if editing:
+            rendered = [""]
+            positions = []
+            for character in value:
+                positions.append((len(rendered) - 1, len(rendered[-1])))
+                shown = "*" if secret else character
+                if shown == "\n":
+                    rendered.append("")
+                    continue
+                for glyph in (" " * (8 - len(rendered[-1]) % 8) if shown == "\t" else shown):
+                    rendered[-1] += glyph
+                    if len(rendered[-1]) >= width - 2:
+                        rendered.append("")
+            positions.append((len(rendered) - 1, len(rendered[-1])))
+            cursor_row, cursor_col = positions[cursor]
+            first = max(0, cursor_row - edit_height + 1)
+            for row, line in enumerate(rendered[first:first + edit_height], body_end + 1):
+                _curses_write(screen, row, 0, line, width, curses.A_REVERSE)
+            cursor_row = body_end + 1 + cursor_row - first
+        controls = ("Ctrl+D accept; Esc cancel" if multiline else "Enter accept; Esc cancel") if editing else "Enter continue; Esc back; j/k scroll"
+        _curses_write(screen, height - 2, 0, controls, width, curses.A_BOLD)
+        _curses_write(screen, height - 1, 0, "PgUp/PgDn: notes; Ctrl+U: clear" if editing else "PgUp/PgDn: scroll notes", width)
+        try:
+            curses.curs_set(1 if editing else 0)
+            if editing:
+                screen.move(cursor_row, cursor_col)
+        except curses.error:
+            pass
+        screen.refresh()
+        key = screen.get_wch()
+        if key in ("\x1b", "\x03"):
+            raise KeyboardInterrupt
+        if key == curses.KEY_RESIZE:
+            continue
+        if key == curses.KEY_PPAGE:
+            offset -= visible
+        elif key == curses.KEY_NPAGE:
+            offset += visible
+        elif not editing:
+            if key in ("\n", "\r", curses.KEY_ENTER, "l"):
+                return ""
+            if key in ("h", "q", "Q", curses.KEY_LEFT):
+                raise KeyboardInterrupt
+            if key in ("j", curses.KEY_DOWN):
+                offset += 1
+            elif key in ("k", curses.KEY_UP):
+                offset -= 1
+            elif key == "\x04":
+                raise EOFError
+        elif key == "\x04" and multiline:
+            return value
+        elif key in ("\n", "\r", curses.KEY_ENTER) and not multiline:
+            return value
+        elif key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
+            if cursor:
+                value = value[:cursor - 1] + value[cursor:]
+                cursor -= 1
+        elif key == curses.KEY_DC:
+            value = value[:cursor] + value[cursor + 1:]
+        elif key == curses.KEY_LEFT:
+            cursor = max(0, cursor - 1)
+        elif key == curses.KEY_RIGHT:
+            cursor = min(len(value), cursor + 1)
+        elif multiline and key in (curses.KEY_UP, curses.KEY_DOWN):
+            row, column = positions[cursor]
+            target = row + (-1 if key == curses.KEY_UP else 1)
+            available = [(abs(col - column), index) for index, (line, col) in enumerate(positions) if line == target]
+            if available:
+                cursor = min(available)[1]
+        elif key == curses.KEY_HOME:
+            cursor = 0
+        elif key == curses.KEY_END:
+            cursor = len(value)
+        elif key == "\x15":
+            value, cursor = "", 0
+        elif isinstance(key, str) and (key.isprintable() or multiline and key in ("\t", "\n", "\r")):
+            if len(value) < (1000000 if multiline else 4096):
+                key = "\n" if key == "\r" else key
+                value = value[:cursor] + key + value[cursor:]
+                cursor += len(key)
+
+
+def friendly_message(title: str, message: str = "") -> None:
+    context = friendly_dialog_context()
+    if friendly_curses_available():
+        import curses
+        try:
+            curses.wrapper(_friendly_dialog_screen, title, "\n\n".join(filter(None, (context, message))))
+            return
+        except (curses.error, OSError):
+            print("Full-screen information unavailable; continuing in text mode.")
+    if message:
+        print(message)
+    input("Press Enter to continue...")
+
+
+def friendly_input(prompt: str, default: str = "", *, secret: bool = False, multiline: bool = False) -> str:
+    context = friendly_dialog_context()
+    if friendly_curses_available():
+        import curses
+        try:
+            return curses.wrapper(_friendly_dialog_screen, prompt, context, default, secret, multiline)
+        except (curses.error, OSError):
+            print("Full-screen entry unavailable; continuing in text mode.")
+    if multiline:
+        print("Paste your table; type DONE on a new line to submit.")
+        lines = []
+        while True:
+            line = input()
+            if line.strip().casefold() == "done":
+                return "\n".join(lines)
+            lines.append(line)
+    label = f"{prompt} [{default}]: " if default and not secret else prompt
+    return (getpass.getpass(label) if secret else input(label)) or default
+
+
 def friendly_yes_no(question: str) -> bool:
     """Ask an explicit, beginner-friendly yes/no question."""
+    if friendly_curses_available():
+        return friendly_select(question, [("n", "No — cancel / keep current"), ("y", "Yes")]) == "y"
     while True:
         answer = input(f"{question} [Y/N]: ").strip().casefold()
         if answer in {"y", "yes"}:
@@ -6237,17 +6436,14 @@ def friendly_yes_no(question: str) -> bool:
 def friendly_return_to_menu() -> None:
     """Pause after an action without letting an accidental Ctrl+C close the menu."""
     try:
-        input("\nPress Enter to return to the main menu...")
+        friendly_message("Action finished", "Press Enter to return to the main menu.")
     except KeyboardInterrupt:
-        print(
-            "\nCtrl+C is a console interrupt, not Paste. The completed table was "
-            "copied automatically; use Ctrl+V in your spreadsheet. Returning to the menu."
-        )
+        print("Returning to the menu.")
 
 
 def friendly_path(prompt: str) -> Path | None:
     """Accept a typed path or a file dragged into a desktop terminal."""
-    raw = input(prompt).strip().strip('"').strip("'")
+    raw = friendly_input(prompt).strip().strip('"').strip("'")
     if not raw:
         print("No file was selected.")
         return None
@@ -6305,15 +6501,16 @@ def friendly_download(results_dir: Path) -> None:
     print("Downloads are saved here:")
     print(f"  {downloads}")
     print()
-    print("  1  HM Land Registry Price Paid Data — very large; England and Wales")
-    print("  2  Companies House snapshot — large; UK registered offices")
-    print("  3  OpenStreetMap England extract — about 1.6 GB; pyosmium needed")
-    print("  4  EPC data — free account and sign-in required")
-    print("  5  Food Standards Agency open-data page")
-    print("  6  Code-Point Open postcode page — free OS account may be required")
-    print("  7  Download a direct HTTP/HTTPS address copied from an official page")
-    print("  B  Back without downloading")
-    choice = input("Choose an option: ").strip().casefold()
+    choice = friendly_select("Download offline address data", [
+        ("1", "HM Land Registry Price Paid Data — very large; England and Wales"),
+        ("2", "Companies House snapshot — large; UK registered offices"),
+        ("3", "OpenStreetMap England extract — large; pyosmium needed"),
+        ("4", "EPC data — free account and sign-in required"),
+        ("5", "Food Standards Agency open-data page"),
+        ("6", "Code-Point Open postcode page — OS account may be required"),
+        ("7", "Download a direct HTTP/HTTPS URL from an official page"),
+        ("b", "Back without downloading"),
+    ])
     if choice == "b":
         return
     if choice in {"4", "5", "6"}:
@@ -6325,7 +6522,7 @@ def friendly_download(results_dir: Path) -> None:
         print("to add the downloaded file. The programme does not bypass those steps.")
         return
     if choice == "7":
-        url = input("Paste the direct download address: ").strip()
+        url = friendly_input("Paste the direct download address: ").strip()
     elif choice == "1":
         print("This complete sales file is several gigabytes and may take a long time.")
         print("Downloading it means accepting HM Land Registry's published conditions.")
@@ -6359,6 +6556,9 @@ def friendly_download(results_dir: Path) -> None:
 
 
 def pasted_text() -> str:
+    if isinstance(sys.stdout, WindowAwareTextWriter) and friendly_curses_available():
+        print("Paste the table below. Enter adds a row; Ctrl+D submits; Esc cancels.")
+        return friendly_input("Paste contact table", multiline=True).strip()
     print()
     print("PASTE YOUR ENTRIES NOW")
     print(
@@ -6603,16 +6803,19 @@ def friendly_build_index(results_dir: Path) -> None:
     if not source:
         return
     print()
-    print("What kind of data is it?")
-    print("  1  HM Land Registry Price Paid Data")
-    print("  2  Energy Performance Certificate (EPC) data")
-    print("  3  Companies House basic company data")
-    print("  4  Food Standards Agency ratings data")
-    print("  5  OpenStreetMap .osm XML export")
-    print("  6  Other CSV/TSV with postcode and address columns")
-    print("  7  Code-Point Open postcode reference")
-    print("  8  Doogal postcode CSV reference")
-    choice = input("Choose 1 to 8: ").strip()
+    choice = friendly_select("Import: what kind of data is this?", [
+        ("1", "HM Land Registry Price Paid Data"),
+        ("2", "Energy Performance Certificate (EPC) data"),
+        ("3", "Companies House basic company data"),
+        ("4", "Food Standards Agency ratings data"),
+        ("5", "OpenStreetMap .osm XML export"),
+        ("6", "Other CSV/TSV with postcode and address columns"),
+        ("7", "Code-Point Open postcode reference"),
+        ("8", "Doogal postcode CSV reference"),
+        ("b", "Back without importing"),
+    ])
+    if choice == "b":
+        return
     profiles = {
         "1": "hmlr",
         "2": "epc",
@@ -6631,9 +6834,9 @@ def friendly_build_index(results_dir: Path) -> None:
     address_columns = ["address"]
     if profile == "generic":
         postcode_column = (
-            input("Name of the postcode column [postcode]: ").strip() or "postcode"
+            friendly_input("Name of the postcode column:", "postcode").strip() or "postcode"
         )
-        raw_columns = input(
+        raw_columns = friendly_input(
             "Address column names, separated by commas [address]: "
         ).strip()
         address_columns = [x.strip() for x in raw_columns.split(",") if x.strip()] or [
@@ -7021,7 +7224,7 @@ def friendly_enter_api_key(name: str, label: str) -> bool:
     """Prompt without echoing and persist one named provider key."""
     try:
         validate_user_secret(name, "placeholder")
-        value = getpass.getpass(f"Paste the {label} API key (input hidden): ")
+        value = friendly_input(f"Paste the {label} API key (masked): ", secret=True)
     except (EOFError, KeyboardInterrupt):
         print("No key was saved.")
         return False
@@ -7047,12 +7250,13 @@ def friendly_api_key_menu() -> None:
     print()
     print("MANAGE API KEYS")
     print("Keys are hidden while you type and saved only for your OS user.")
-    print("  1  OpenAI API")
-    print("  2  Ollama hosted web search")
-    print("  3  getAddress.io")
-    print("  4  Other provider/environment-variable name")
-    print("  B  Back without changing a key")
-    choice = input("Choose an option: ").strip().casefold()
+    choice = friendly_select("Manage API keys", [
+        ("1", "OpenAI API"),
+        ("2", "Ollama hosted web search"),
+        ("3", "getAddress.io"),
+        ("4", "Other provider/environment-variable name"),
+        ("b", "Back without changing a key"),
+    ])
     known = {
         "1": ("OPENAI_API_KEY", "OpenAI"),
         "2": ("OLLAMA_API_KEY", "Ollama web-search"),
@@ -7062,7 +7266,7 @@ def friendly_api_key_menu() -> None:
         return
     selected = known.get(choice)
     if choice == "4":
-        name = input("Environment-variable name (for example LLM_API_KEY): ").strip()
+        name = friendly_input("Environment-variable name (for example LLM_API_KEY): ").strip()
         selected = (name, "provider")
     if not selected:
         print("That was not a valid choice, so no key was changed.")
@@ -7280,7 +7484,7 @@ def friendly_setup_ollama() -> dict[str, object] | None:
     print()
     print("SET UP FREE LOCAL OLLAMA")
     print("Ollama runs the second-stage reviewer on this computer without an API key.")
-    base_url = input("Ollama server URL [http://localhost:11434]: ").strip() or "http://localhost:11434"
+    base_url = friendly_input("Ollama server URL:", "http://localhost:11434").strip() or "http://localhost:11434"
     base_url = validated_llm_base_url(base_url).removesuffix("/api")
     local = urllib.parse.urlsplit(base_url).hostname in {"localhost", "127.0.0.1", "::1"}
     executable = find_ollama_executable()
@@ -7346,7 +7550,16 @@ def friendly_setup_ollama() -> dict[str, object] | None:
             "family. You may still type one below."
         )
     print(f"Recommended model: {model} ({description})")
-    chosen = input(f"Model [{model}]: ").strip() or model
+    model_choices = list(dict.fromkeys([model, *suitable]))
+    selection = friendly_select("Choose an Ollama model", [
+        *[(str(index), name + (" (recommended)" if index == 1 else ""))
+          for index, name in enumerate(model_choices, 1)],
+        ("c", "Enter another model name"),
+        ("b", "Back — keep current settings"),
+    ])
+    if selection == "b":
+        return None
+    chosen = (friendly_input("Ollama model:", model).strip() or model) if selection == "c" else model_choices[int(selection) - 1]
     if chosen.startswith("-") or "cloud" in chosen.casefold():
         print("Choose a downloaded chat model, not a command option or cloud model.")
         return None
@@ -7431,7 +7644,7 @@ def _friendly_llm_configuration(current: dict[str, object] | None) -> dict[str, 
         if not existing_key:
             print("OPENAI_API_KEY is not available; previous LLM settings retained.")
             return current
-        model = input("Model [gpt-5.6-terra]: ").strip() or "gpt-5.6-terra"
+        model = friendly_input("OpenAI model:", "gpt-5.6-terra").strip() or "gpt-5.6-terra"
         return {
             "llm_provider": "openai",
             "llm_model": model,
@@ -7441,13 +7654,13 @@ def _friendly_llm_configuration(current: dict[str, object] | None) -> dict[str, 
     if choice == "2":
         return friendly_setup_ollama() or current
     if choice == "3":
-        base_url = input("HTTPS API base URL (usually ending /v1): ").strip()
-        model = input("Model name: ").strip()
+        base_url = friendly_input("HTTPS API base URL (usually ending /v1): ").strip()
+        model = friendly_input("Model name: ").strip()
         if not base_url or not model:
             print("Both the base URL and model are required; previous LLM settings retained.")
             return current
         base_url = validated_llm_base_url(base_url)
-        key_env = input("API-key variable [LLM_API_KEY; type - for no key]: ").strip() or "LLM_API_KEY"
+        key_env = friendly_input("API-key variable (type - for no key):", "LLM_API_KEY").strip() or "LLM_API_KEY"
         if key_env == "-":
             key_env = ""
         elif not os.environ.get(key_env):
@@ -7485,7 +7698,14 @@ def friendly_auto_approve_threshold(
     print("  3  1.00 — keep all provisional lookup candidates for approval")
     print("  B  Keep the current setting")
     while True:
-        choice = ask("Total automatic-entry threshold: ").strip().casefold()
+        choice = (ask("Total automatic-entry threshold: ") if prompt is not None else friendly_select(
+            f"Automatic entry (current {current:.2f}; evidence tiers, not measured accuracy)", [
+                ("1", "0.99 — two lookup families must agree (default)"),
+                ("2", "0.95 — one structurally safe lookup candidate"),
+                ("3", "1.00 — manual approval of provisional candidates"),
+                ("b", "Back — keep current setting"),
+            ]
+        )).strip().casefold()
         if choice == "1":
             return 0.99
         if choice == "2":
@@ -7674,13 +7894,15 @@ def _friendly_curses_screen(
         pass
     screen.keypad(True)
     selected = max(0, min(selected, len(items) - 1))
+    screen.timeout(-1)
     while True:
         screen.erase()
         height, width = screen.getmaxyx()
         notice = textwrap.wrap(COPYRIGHT, max(1, width - 1)) + textwrap.wrap(
             "GNU GPL version 3 or later; no warranty.", max(1, width - 1)
         )
-        menu_start = len(notice) + 3
+        title_lines = textwrap.wrap(title, max(1, width - 1)) or [""]
+        menu_start = len(notice) + len(title_lines) + 2
         if height < menu_start + 7 or width < 24:
             _curses_write(screen, 0, 0, "Enlarge window; Q exits", width)
             screen.refresh()
@@ -7697,12 +7919,13 @@ def _friendly_curses_screen(
         _curses_write(screen, 0, 0, f"ADDRESSMEND {VERSION}", width, curses.A_BOLD)
         for row, line in enumerate(notice, start=1):
             _curses_write(screen, row, 0, line, width)
-        _curses_write(screen, menu_start - 2, 0, f"Results: {results_dir}", width)
-        _curses_write(screen, menu_start - 1, 0, title, width, curses.A_BOLD)
+        _curses_write(screen, len(notice) + 1, 0, f"Results: {results_dir}", width)
+        for row, line in enumerate(title_lines, len(notice) + 2):
+            _curses_write(screen, row, 0, line, width, curses.A_BOLD)
         for row, item_index in enumerate(range(first, last), start=menu_start):
             _key, label = items[item_index]
             marker = ">" if item_index == selected else " "
-            text = f" {marker} {label}"
+            text = f" {marker} {('[' + _key.upper() + '] ') if back else ''}{label}"
             attribute = curses.A_REVERSE if item_index == selected else curses.A_NORMAL
             _curses_write(screen, row, 0, text, width, attribute)
 
@@ -7750,6 +7973,11 @@ def _friendly_curses_screen(
             return back or "q", len(items) - 1
         elif key in {curses.KEY_LEFT, ord("h")} and back:
             return back, selected
+        elif back and 0 <= key <= 0x10ffff:
+            typed = chr(key).casefold()
+            for index, (item_key, _label) in enumerate(items):
+                if len(item_key) == 1 and typed == item_key:
+                    return item_key, index
         elif key == -1:
             raise EOFError("Terminal input closed")
 
@@ -7770,14 +7998,24 @@ def friendly_curses_choice(
 
 
 def friendly_select(title: str, items: Sequence[tuple[str, str]]) -> str:
+    context = friendly_dialog_context()
     if friendly_curses_available():
         try:
+            if context:
+                friendly_message(title, context)
             return friendly_curses_choice(items, 0, friendly_results_directory(), title, "b")[0]
         except (ImportError, OSError):
             print("Full-screen selection unavailable; using numbered choices.")
-    for key, label in items:
-        print(f" {key.upper():>2}  {label}")
-    return input("Choose an option: ").strip().casefold()
+    while True:
+        print(title)
+        for key, label in items:
+            print(f" {key.upper():>2}  {label}")
+        choice = input("Choose an option: ").strip().casefold()
+        if choice in {key for key, _label in items}:
+            return choice
+        if choice in {"q", "back", ""}:
+            return "b"
+        print("Choose one of the listed options, or B to go back.")
 
 
 def friendly_menu() -> int:
@@ -7796,6 +8034,7 @@ def _friendly_menu() -> int:
     use_curses = friendly_curses_available()
     selected = 0
     while True:
+        friendly_dialog_context()
         items = friendly_menu_items(
             online,
             homedata,
