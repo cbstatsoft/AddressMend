@@ -5,6 +5,10 @@ semantic versioning.
 
 ## Unreleased
 
+- Add a dedicated missing-postcode flow: extract an explicitly supplied trailing
+  postcode, preserve locality in address searches, insert supported unique
+  matches under the selected evidence tier and offer weaker matches for review.
+  Avoid postcode-constrained matching rules when the postcode is blank.
 - Use highlighted choices throughout curses submenus, without numeric shortcut
   labels or numeric selection. Remove the threshold's preceding numbered list;
   keep number entry only in the text fallback.
