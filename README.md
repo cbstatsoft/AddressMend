@@ -18,12 +18,27 @@ and LibreOffice Calc.
 
 ## Desktop controls and settings
 
-The main menu and LLM provider selector use Python curses on supported interactive
-terminals. Arrow keys or **j/k** move; **l** or Enter selects; **h** or Left returns
-from the provider selector. At the main menu, h does nothing. Home/End (or g/G)
+The main menu and all desktop submenus use Python curses on supported interactive
+terminals, including downloads, imports, API keys, Ollama models, review and
+automatic-entry thresholds. Arrow keys or **j/k** move; **l** or Enter selects;
+**h** or Left returns from a submenu. At the main menu, h does nothing. Home/End (or g/G)
 jump to the first/last item, Page Up/Page Down scroll, and Q/Escape exits or goes
-back. Text-entry forms use normal typing. Menus restore the terminal before
-running jobs, so output wrapping and the pinned progress bar continue to work.
+back. Submenus also accept their displayed single-character shortcuts. Yes/no
+confirmations start on **No**; **Y** or **N** selects explicitly.
+
+Paths, URLs, models, column names and masked API keys have full-screen entry
+forms. Type normally (hjkl remain letters), use arrows, Home/End, Backspace or
+Delete to edit, Ctrl+U to clear, Enter to accept and Escape to cancel. Defaults
+are prefilled. The paste-table form preserves tabs and line breaks: Enter adds
+a line, **Ctrl+D submits**, and Escape cancels. In text mode, paste still ends
+with `DONE` on a line of its own.
+
+Setup explanations and recent action output appear in scrollable information
+panels; use j/k or Page Up/Page Down and Enter to continue. In entry forms,
+Page Up/Page Down scroll the explanatory notes. Recent output is limited to
+200 lines per stream in these panels; the terminal log and saved reports remain
+available. Menus restore the terminal before running jobs, so output wrapping
+and the pinned progress bar continue to work.
 
 Standard Windows Python does not include curses. On interactive desktop startup,
 AddressMend attempts to install missing `windows-curses` through the running

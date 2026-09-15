@@ -5,6 +5,10 @@ semantic versioning.
 
 ## Unreleased
 
+- Extend curses to download/import/API-key/threshold submenus, Ollama model
+  selection, confirmations, editable settings, masked keys and multiline paste.
+  Show setup notes and recent action output in scrollable panels, retain text
+  fallback, and default confirmations to No. Escape cancels without submitting.
 - Count actionable suggestions consistently before offering and opening review;
   explain already-applied or invalid suggestions instead of silently skipping all.
 - Make review wait for a deliberate decision: Enter no longer skips a correction,
